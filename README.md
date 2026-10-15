@@ -9,6 +9,8 @@ An RL agent keeps a rotated surface code's control parameters calibrated while t
 | `surface_code_env.py` | Stim environment for the rotated surface code with sinusoidal or 1/f^α drift. |
 | `rl_agent.py` | The PEPG agent (`RLControlAgent`). |
 | `run_experiment.py` | Command-line script that runs one closed-loop trial and prints Fixed, RL and Optimal side by side. |
+| `minimal_control_env.py` | Single-parameter control model and the analytic bounds. |
+| `run_minimal_experiment.py` | Checks the analytic results against the minimal model. |
 
 ### The model
 
@@ -84,6 +86,19 @@ RL tracks well when most of the drift power is at low frequencies: large α and 
 - `--distance 3` gives a faster, smaller problem (41 parameters).
 - `--params-per-gate` gives each gate several drifting knobs.
 - The agent's hyperparameters are set in `main()` in `run_experiment.py`.
+
+### Minimal single-parameter model
+
+`minimal_control_env.py` reduces the problem to one drifting CX coupler of a d=3 code, with every other parameter at its optimum. The reading is the mean EDR over the coupler's detectors, `y = y0 + H_l e^2 + σ n`, and the drift is AR(1) per slot. In `stim` mode (the default) the readings come from the real circuit. In `gaussian` mode they come from the idealized model, using the constants calibrated from stim. The file also holds the closed-form results: the Cramér–Rao bound `c*`, `tau_lim`, and the mean and variance of one update.
+
+```bash
+python run_minimal_experiment.py --experiment tracking --plot   # c vs the Cramér–Rao bound and tau_lim (~1 min)
+python run_minimal_experiment.py --experiment variance --plot   # E[Δμ], Var[Δμ] and S* (~1 min)
+python run_minimal_experiment.py --experiment neighbor --plot   # Var[Δμ_i] with L_nbr > 0 (~1 min)
+python run_minimal_experiment.py --experiment tracking --mode gaussian   # idealized reading model
+```
+
+The agent is `RLControlAgent` reduced to plain antithetic SGD. Each reading is taken at the probed setting `μ ± δ`, so it carries information `κ(e² + σ_p²)`, and the bound `c*` on `E[(μ − p*)²]` uses that. The `neighbor` experiment adds the coupler that shares the most detectors with `M_i`. That coupler drifts independently and is probed but not steered, and its `C_il` is calibrated like `H_l`.
 
 ### Using the pieces directly
 
