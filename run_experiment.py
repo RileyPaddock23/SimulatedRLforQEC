@@ -25,7 +25,7 @@ from typing import Dict
 import numpy as np
 
 from rl_agent import RLControlAgent
-from surface_code_env import RotatedSurfaceCodeEnv
+from color_code_env import RotatedSurfaceCodeEnv
 
 # Reference epoch used to convert shots -> environment time: 20 candidates * 350 shots
 SHOTS_PER_EPOCH_REF = 7000.0
