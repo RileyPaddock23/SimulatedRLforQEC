@@ -23,38 +23,49 @@ import stim
 import pymatching
 
 
+def fractional_taps(alpha: float, n_taps: int = 256) -> np.ndarray:
+    """
+    Unit-norm moving-average taps b of 1/f^alpha fractional noise (fractional
+    integration of order d = alpha / 2, truncated at n_taps). x_n = sum_k b_k u_{n-k}
+    with u ~ N(0, 1) has unit variance. For alpha <= 0.01 the taps are white (b = [1]).
+    """
+    if alpha <= 0.01:
+        return np.array([1.0])
+    d = float(alpha) / 2.0
+    b = np.empty(n_taps, dtype=np.float64)
+    b[0] = 1.0
+    for k in range(1, n_taps):
+        b[k] = b[k - 1] * (k - 1 + d) / k
+    return b / np.sqrt(np.sum(b ** 2))
+
+
 def generate_fractional_noise(
     n_steps: int,
     alpha: float,
     sigma: float = 0.6,
     n_taps: int = 256,
     rng: Optional[np.random.Generator] = None,
+    normalize: str = "sample",
 ) -> np.ndarray:
     """
     Generates 1/f^alpha fractional noise with unit variance scaled by sigma.
     For alpha <= 0.01, generates pure white noise.
+    normalize="sample" rescales the trajectory to its own sample mean and std;
+    "analytic" keeps the exact (stationary, causal) process, whose variance is 1 by construction.
     """
     if rng is None:
         rng = np.random.default_rng(163)
     if alpha <= 0.01:
         return rng.normal(0.0, sigma, size=n_steps).astype(np.float32)
 
-    d = float(alpha) / 2.0
-    b = np.empty(n_taps, dtype=np.float64)
-    b[0] = 1.0
-    for k in range(1, n_taps):
-        b[k] = b[k - 1] * (k - 1 + d) / k
-    norm = np.sqrt(np.sum(b ** 2))
-    if norm > 1e-12:
-        b /= norm
-
+    b = fractional_taps(alpha, n_taps)
     burn_in = min(n_taps, 500)
     total = n_steps + burn_in
     x = rng.standard_normal(total + len(b))
     y = np.convolve(x, b, mode="full")[len(b) - 1: len(b) - 1 + total]
     traj = y[burn_in:burn_in + n_steps]
     std_val = float(np.std(traj))
-    if std_val > 1e-12:
+    if normalize == "sample" and std_val > 1e-12:
         traj = (traj - float(np.mean(traj))) / std_val
     return (float(sigma) * traj).astype(np.float32)
 
@@ -65,19 +76,24 @@ def generate_power_law_noise(
     white_fraction: float = 0.1,
     sigma: float = 0.60,
     rng: Optional[np.random.Generator] = None,
+    normalize: str = "sample",
 ) -> np.ndarray:
     """
     Generates 1/f^alpha noise on top of a white noise floor.
     `white_fraction` is the fraction of the total variance carried by the white floor.
+    `normalize` is "sample" (rescale to the trajectory's own mean and std) or "analytic"
+    (stationary std sigma by construction, so the process is causal and linear-Gaussian).
     """
+    if normalize not in ("sample", "analytic"):
+        raise ValueError(f"Unknown normalize '{normalize}' (use 'sample' or 'analytic')")
     if rng is None:
         rng = np.random.default_rng(163)
     w = float(np.clip(white_fraction, 0.0, 1.0))
-    colored = generate_fractional_noise(n_steps, alpha=alpha, sigma=1.0, rng=rng)
+    colored = generate_fractional_noise(n_steps, alpha=alpha, sigma=1.0, rng=rng, normalize=normalize)
     white = rng.normal(0.0, 1.0, size=n_steps).astype(np.float32)
     combined = np.sqrt(1.0 - w) * colored + np.sqrt(w) * white
     std_val = float(np.std(combined))
-    if std_val > 1e-12:
+    if normalize == "sample" and std_val > 1e-12:
         combined = (combined - float(np.mean(combined))) / std_val
     return (float(sigma) * combined).astype(np.float32)
 
@@ -87,9 +103,10 @@ class RotatedSurfaceCodeEnv:
     Parameterized environment for a rotated surface code with continuous
     hardware drift and local factor-graph masking.
 
-    Time `t` is measured in (reference) epochs. `drift_frequency` is in cycles per
-    epoch, and ARMA trajectories are sampled once per epoch and linearly
-    interpolated in between.
+    Time `t` is measured in drift updates. The drift is a continuous process, discretized
+    at the drift update frequency (one update every SHOTS_PER_DRIFT_UPDATE shots in
+    run_experiment.py). `drift_frequency` is in cycles per drift update, and ARMA
+    trajectories are sampled once per drift update and linearly interpolated in between.
     """
 
     def __init__(
@@ -109,7 +126,8 @@ class RotatedSurfaceCodeEnv:
         arma_white_fraction: float = 0.1,  # fraction of drift variance in the white floor
         arma_sigma: float = 0.60,
         arma_common_fraction: float = 0.08,
-        max_epochs: int = 500,
+        arma_normalize: str = "sample",  # "sample" or "analytic" (see generate_power_law_noise)
+        max_drift_updates: int = 500,
         seed: int = 163,
     ):
         self.distance = distance
@@ -127,7 +145,8 @@ class RotatedSurfaceCodeEnv:
         self.arma_white_fraction = float(np.clip(arma_white_fraction, 0.0, 1.0))
         self.arma_sigma = float(arma_sigma)
         self.arma_common_fraction = float(np.clip(arma_common_fraction, 0.0, 1.0))
-        self.max_epochs = max(10, int(max_epochs))
+        self.arma_normalize = arma_normalize
+        self.max_drift_updates = max(10, int(max_drift_updates))
         self.seed = int(seed)
         self.rng = np.random.default_rng(self.seed)
 
@@ -197,11 +216,19 @@ class RotatedSurfaceCodeEnv:
 
         if self.drift_profile != "arma":
             return
+        self._generate_arma_trajectories(self.rng)
 
+    def resample_drift(self, seed: int):
+        """Draws new ARMA trajectories from `seed`, keeping the gates (sensitivities, base errors) fixed."""
+        if self.drift_profile == "arma":
+            self._generate_arma_trajectories(np.random.default_rng(seed))
+
+    def _generate_arma_trajectories(self, rng: np.random.Generator):
         # Each parameter's trajectory = sqrt(c) * shared + sqrt(1 - c) * local
-        n = self.max_epochs + 1
+        n = self.max_drift_updates + 1
         gen = lambda: generate_power_law_noise(
-            n, alpha=self.arma_alpha, white_fraction=self.arma_white_fraction, sigma=self.arma_sigma, rng=self.rng
+            n, alpha=self.arma_alpha, white_fraction=self.arma_white_fraction, sigma=self.arma_sigma, rng=rng,
+            normalize=self.arma_normalize,
         )
 
         c = self.arma_common_fraction
@@ -211,7 +238,7 @@ class RotatedSurfaceCodeEnv:
             self.arma_trajectories[pid] = np.sqrt(c) * shared + np.sqrt(1.0 - c) * gen()
 
     def get_drift_opt(self, t: float) -> np.ndarray:
-        """Returns the ground-truth optimal parameter vector at time t (epochs)."""
+        """Returns the ground-truth optimal parameter vector at time t (drift updates)."""
         if self.drift_profile == "sinusoidal":
             p_opt = np.zeros(self.num_params, dtype=np.float32)
             for m in range(self.params_per_gate):
@@ -219,11 +246,11 @@ class RotatedSurfaceCodeEnv:
                 p_opt[m::self.params_per_gate] = self.drift_amplitude * np.sin(2.0 * np.pi * freq_m * t)
             return p_opt
 
-        # ARMA: linear interpolation between per-epoch samples
-        t_clamped = max(0.0, min(float(t), float(self.max_epochs)))
+        # ARMA: linear interpolation between per-drift-update samples
+        t_clamped = max(0.0, min(float(t), float(self.max_drift_updates)))
         idx = int(t_clamped)
         frac = t_clamped - idx
-        if frac > 1e-5 and idx + 1 <= self.max_epochs:
+        if frac > 1e-5 and idx + 1 <= self.max_drift_updates:
             return (1.0 - frac) * self.arma_trajectories[:, idx] + frac * self.arma_trajectories[:, idx + 1]
         return self.arma_trajectories[:, idx].copy()
 

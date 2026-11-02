@@ -3,7 +3,7 @@ RL Drift-Tracking Experiment on the Rotated Surface Code
 ========================================================
 Closed-loop PEPG steering of drifting control parameters, driven only by
 detector error rates (EDR). Time advances with cumulative physical shots
-(a "shot clock"): each policy update costs batch_size * shots_per_candidate
+(a "shot clock"): each epoch (one policy update) costs batch_size * shots_per_candidate
 shots, and the drift keeps moving while candidates are being measured.
 
 Compares three policies at periodic checkpoints:
@@ -19,6 +19,7 @@ Examples:
 
 import argparse
 import json
+import os
 import time
 from typing import Dict
 
@@ -27,8 +28,13 @@ import numpy as np
 from rl_agent import RLControlAgent
 from surface_code_env import RotatedSurfaceCodeEnv
 
-# Reference epoch used to convert shots -> environment time: 20 candidates * 350 shots
-SHOTS_PER_EPOCH_REF = 7000.0
+HERE = os.path.dirname(os.path.abspath(__file__))
+FIG_DIR = os.path.join(HERE, "figures")
+RES_DIR = os.path.join(HERE, "results")
+
+# Drift update interval, converts shots -> environment time (the drift is sampled once per
+# drift update and interpolated in between): 20 candidates * 350 shots
+SHOTS_PER_DRIFT_UPDATE = 7000.0
 
 
 def run_trial(
@@ -43,7 +49,7 @@ def run_trial(
 ) -> Dict:
     fixed_policy = np.zeros(env.num_params, dtype=np.float32)
     history = {k: [] for k in (
-        "shot", "epoch", "ler_fixed", "ler_rl", "ler_opt",
+        "shot", "drift_update", "ler_fixed", "ler_rl", "ler_opt",
         "edr_fixed", "edr_rl", "edr_opt", "tracking_rms", "mu_0", "p_opt_0",
     )}
 
@@ -60,7 +66,7 @@ def run_trial(
     while True:
         # Periodic evaluation checkpoint (static snapshot at the current physical time)
         if cur_shot >= next_eval:
-            t_ep = cur_shot / SHOTS_PER_EPOCH_REF
+            t_ep = cur_shot / SHOTS_PER_DRIFT_UPDATE
             p_opt = env.get_drift_opt(t_ep)
             ev_f = env.evaluate_policy(fixed_policy, t=t_ep, shots=eval_shots, decode=True)
             ev_r = env.evaluate_policy(agent.mu, t=t_ep, shots=eval_shots, decode=True)
@@ -68,7 +74,7 @@ def run_trial(
             rms = float(np.sqrt(np.mean((agent.mu - p_opt) ** 2)))
 
             history["shot"].append(cur_shot)
-            history["epoch"].append(t_ep)
+            history["drift_update"].append(t_ep)
             for tag, ev in (("fixed", ev_f), ("rl", ev_r), ("opt", ev_o)):
                 history[f"ler_{tag}"].append(ev["logical_error_rate"])
                 history[f"edr_{tag}"].append(ev["mean_edr"])
@@ -89,7 +95,7 @@ def run_trial(
         cands = agent.sample_policies(batch_size=batch_size, antithetic=True)
         obs = np.zeros((batch_size, env.num_detectors), dtype=np.float32)
         for k in range(batch_size):
-            t_cand = (cur_shot + (k + 0.5) * shots_per_candidate) / SHOTS_PER_EPOCH_REF
+            t_cand = (cur_shot + (k + 0.5) * shots_per_candidate) / SHOTS_PER_DRIFT_UPDATE
             obs[k] = env.evaluate_policy(cands[k], t=t_cand, shots=shots_per_candidate)["edr_vector"]
 
         agent.update(cands, obs)
@@ -129,6 +135,7 @@ def plot_history(history: Dict, title: str, path: str):
         ax.legend()
     fig.suptitle(title)
     plt.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     plt.savefig(path, dpi=130)
     plt.close()
     print(f"Plot saved to '{path}'")
@@ -141,7 +148,7 @@ def main():
     p.add_argument("--rounds", type=int, default=5)
     p.add_argument("--params-per-gate", type=int, default=1)
     p.add_argument("--drift", choices=["sinusoidal", "arma"], default="sinusoidal")
-    p.add_argument("--drift-frequency", type=float, default=1.0 / 150.0, help="sinusoid cycles per reference epoch")
+    p.add_argument("--drift-frequency", type=float, default=1.0 / 150.0, help="sinusoid cycles per drift update")
     p.add_argument("--drift-amplitude", type=float, default=0.6)
     p.add_argument("--arma-alpha", type=float, default=0.67, help="PSD exponent: 0=white, 1=flicker, 2=random walk")
     p.add_argument("--arma-white", type=float, default=0.1, help="fraction of drift variance in the white noise floor")
@@ -155,7 +162,7 @@ def main():
     p.add_argument("--eval-shots", type=int, default=800)
     p.add_argument("--seed", type=int, default=163)
     p.add_argument("--plot", action="store_true", help="save a PNG of the run")
-    p.add_argument("--out", type=str, default=None, help="JSON output path (default: results_<drift>.json)")
+    p.add_argument("--out", type=str, default=None, help="JSON output path (default: results/results_<drift>.json)")
     args = p.parse_args()
 
     t0 = time.time()
@@ -170,7 +177,7 @@ def main():
         arma_white_fraction=args.arma_white,
         arma_sigma=args.arma_sigma,
         arma_common_fraction=args.arma_common,
-        max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1,
+        max_drift_updates=int(np.ceil(args.total_shots / SHOTS_PER_DRIFT_UPDATE)) + 1,
         seed=args.seed,
     )
     agent = RLControlAgent(
@@ -188,7 +195,7 @@ def main():
         seed=args.seed,
     )
 
-    drift_desc = (f"sinusoidal f={args.drift_frequency:.4g}/epoch A={args.drift_amplitude}" if args.drift == "sinusoidal"
+    drift_desc = (f"sinusoidal f={args.drift_frequency:.4g}/drift update A={args.drift_amplitude}" if args.drift == "sinusoidal"
                   else f"1/f^{args.arma_alpha} + {args.arma_white:.0%} white floor, sigma={args.arma_sigma}")
     print(f"d={args.distance} rounds={args.rounds} | {env.num_params} params, {env.num_detectors} detectors, "
           f"M sparsity {1.0 - env.M.mean():.3f} | setup {time.time() - t0:.1f}s")
@@ -212,13 +219,14 @@ def main():
           f"(steering advantage {s['steering_advantage']:.2f})")
     print(f"  Tracking RMS error |mu - p_opt|: {s['tracking_rms']:.3f}")
 
-    out = args.out or f"results_{args.drift}.json"
+    out = args.out or os.path.join(RES_DIR, f"results_{args.drift}.json")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
         json.dump({"config": vars(args), **result}, f, indent=2)
     print(f"Results saved to '{out}'")
 
     if args.plot:
-        plot_history(result["history"], f"RL drift tracking: {drift_desc}", out.replace(".json", ".png"))
+        plot_history(result["history"], f"RL drift tracking: {drift_desc}", os.path.join(FIG_DIR, os.path.basename(out).replace(".json", ".png")))
 
 
 if __name__ == "__main__":

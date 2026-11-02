@@ -26,6 +26,7 @@ Examples:
 """
 
 import argparse
+import os
 import time
 from typing import Dict, List, Optional
 
@@ -33,6 +34,8 @@ import numpy as np
 
 from analytics.minimal_control_env import MinimalControlEnv, cramer_rao_c, tau_lim, update_stats_theory, v_pair
 from rl_agent import RLControlAgent
+
+FIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "figures")
 
 
 def make_controller(env: MinimalControlEnv, gain: float, sigma_p: float, seed: int):
@@ -51,8 +54,8 @@ def make_controller(env: MinimalControlEnv, gain: float, sigma_p: float, seed: i
 
 
 def run_update(env: MinimalControlEnv, agent: RLControlAgent, S: int, B: int) -> np.ndarray:
-    """Measures B candidates in consecutive slots (drift moves between slots), then updates.
-    Returns mu - p* per slot and coupler, shape (B, n) (mu before the update)."""
+    """Measures the B candidates of one epoch back to back (drift moves between candidates), then updates.
+    Returns mu - p* per candidate and coupler, shape (B, n) (mu before the update)."""
     cands = agent.sample_policies(B, antithetic=True)  # partners k and k + B/2
     obs = np.empty((B, 1), dtype=np.float32)
     e_mu = np.empty((B, env.n))
@@ -129,14 +132,14 @@ def shot_variance_at(env, offsets, sigma_p, draws=100, shots=4000) -> float:
 
 
 # ------------------------------------------------------------------ closed loop
-def closed_loop(env, tau, S, B, gain, sigma_p, n_slots, seed) -> float:
+def closed_loop(env, tau, S, B, gain, sigma_p, n_candidates, seed) -> float:
     """Runs the controller on AR(1) drift; returns c = E[(mu - p*)^2] after a burn-in."""
     env.set_drift(tau, env.s)
     agent, _ = make_controller(env, gain, sigma_p, seed)
     agent.mu[:] = env.p_star
-    burn = int(min(5 * tau, n_slots // 2))
+    burn = int(min(5 * tau, n_candidates // 2))
     e2: List[float] = []
-    for u in range((burn + n_slots) // B):
+    for u in range((burn + n_candidates) // B):
         e_mu = run_update(env, agent, S, B)
         if u * B >= burn:
             e2.extend(e_mu[:, 0] ** 2)
@@ -152,6 +155,8 @@ def _pyplot():
 
 
 def _save(plt, fig, axes, path):
+    path = os.path.join(FIG_DIR, path)
+    os.makedirs(FIG_DIR, exist_ok=True)
     for ax in np.atleast_1d(axes):
         ax.grid(True, ls="--", alpha=0.5)
         ax.legend()
@@ -171,16 +176,16 @@ def experiment_tracking(env, args):
     print(f"  {'tau':>6} | {'gain':>5} | {'c/s^2':>7} | {'c*/s^2':>7} | {'k':>6} | {'c>=c*':>5}")
     rows = []
     for tau in taus:
-        n_slots = int(max(30 * tau, 10_000))
+        n_candidates = int(max(30 * tau, 10_000))
         a = np.exp(-1.0 / tau)
         c_star = cramer_rao_c(env.kappa(S), s2 * (1 - a * a), a, sp ** 2)
         # Tune the gain on the Gaussian model with shorter runs, then run the chosen mode
         mode = env.mode
         env.mode = "gaussian"
-        tuned = [closed_loop(env, tau, S, B, g, sp, n_slots // 3, args.seed) for g in gains]
+        tuned = [closed_loop(env, tau, S, B, g, sp, n_candidates // 3, args.seed) for g in gains]
         env.mode = mode
         g_best = gains[int(np.argmin(tuned))]
-        c = closed_loop(env, tau, S, B, g_best, sp, n_slots, args.seed + 1)
+        c = closed_loop(env, tau, S, B, g_best, sp, n_candidates, args.seed + 1)
         k = c / c_star - 1.0
         rows.append({"c": c / s2, "k": k})
         print(f"  {tau:>6g} | {g_best:>5.2f} | {c / s2:>7.3f} | {c_star / s2:>7.3f} | {k:>6.2f} | {'yes' if k >= 0 else 'NO':>5}")
@@ -197,13 +202,13 @@ def experiment_tracking(env, args):
         f = (np.log(cs[j - 1]) - np.log(args.target)) / (np.log(cs[j - 1]) - np.log(cs[j]))
         tau_cross = float(np.exp(lt[j - 1] + f * (lt[j] - lt[j - 1])))
         k_near = float(np.exp(np.interp(np.log(tau_cross), lt, np.log(np.maximum(ks, 1e-3)))))
-        print(f"    measured crossing                  tau = {tau_cross:8.1f} slots")
-        print(f"    tau_lim with k at crossing ({k_near:.2f})  tau = {tau_lim(lam, args.target, k_near, v):8.1f} slots")
+        print(f"    measured crossing                  tau = {tau_cross:8.1f} candidates")
+        print(f"    tau_lim with k at crossing ({k_near:.2f})  tau = {tau_lim(lam, args.target, k_near, v):8.1f} candidates")
     else:
         print("    measured c/s^2 does not cross R_t inside the tau sweep")
     k_med = float(np.median(ks))
-    print(f"    tau_lim with median k ({k_med:.2f})       tau = {tau_lim(lam, args.target, k_med, v):8.1f} slots")
-    print(f"    tau_lim at the bound (k=0)          tau = {tau_lim(lam, args.target, 0.0, v):8.1f} slots")
+    print(f"    tau_lim with median k ({k_med:.2f})       tau = {tau_lim(lam, args.target, k_med, v):8.1f} candidates")
+    print(f"    tau_lim at the bound (k=0)          tau = {tau_lim(lam, args.target, 0.0, v):8.1f} candidates")
 
     # Limits of the probe-free Cramer-Rao cubic
     q2 = 1e-4
@@ -223,7 +228,7 @@ def experiment_tracking(env, args):
         ax.axvline(tau_lim(lam, args.target, k_med, v), color="#2ca02c", ls="-.", label=f"$\\tau_{{lim}}$ (k={k_med:.1f})")
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("drift correlation time τ (slots)")
+        ax.set_xlabel("drift correlation time τ (candidates)")
         ax.set_ylabel("$E[(\\mu - p^*)^2] / s^2$")
         ax.set_title(f"Tracking vs bound (Λ={lam:.2f}, $\\sigma_p$={sp})")
         _save(plt, fig, ax, "minimal_tracking.png")
@@ -233,7 +238,7 @@ def experiment_variance(env, args):
     S, B, sp = args.shots_per_candidate, args.batch_size, args.sigma_p
     print(f"=== Update statistics (B={B}, sigma_p={sp}, gain={args.gain}, ebar0={args.ebar}, {args.reps} updates) ===")
     print(f"  {'case':<24} | {'E[dmu] emp':>16} | {'E[dmu] th':>9} | {'Var emp':>18} | {'Var th':>9}")
-    for label, tau in (("drift off", None), (f"drift on, tau={args.tau_shots / S:g} slots", args.tau_shots / S)):
+    for label, tau in (("drift off", None), (f"drift on, tau={args.tau_shots / S:g} candidates", args.tau_shots / S)):
         r = update_statistics(env, S, B, args.gain, sp, args.ebar, args.reps, tau, args.seed)
         print(f"  {label:<24} | {r['mean_emp']:>+9.5f}±{r['mean_se']:.5f} | {r['mean_th']:>+9.5f} | "
               f"{r['var_emp']:.3e}±{r['var_se']:.1e} | {r['var_th']:.3e}")
@@ -282,7 +287,7 @@ def experiment_neighbor(env, args):
             res[label].append(r)
             print(f"  {label:<10} | {el:>6.2f} | {2 * r['L_nbr'] / (sig / S):>14.2f} | "
                   f"{r['var_emp']:.3e}±{r['var_se']:.1e} | {r['var_th']:.3e} | {r['var_th_no_nbr']:>11.3e}")
-    print(f"  (drift on: tau = {args.tau_shots:g} shots = {args.tau_shots / S:g} slots, neighbor drifts independently)")
+    print(f"  (drift on: tau = {args.tau_shots:g} shots = {args.tau_shots / S:g} candidates, neighbor drifts independently)")
 
     if args.plot:
         plt = _pyplot()
@@ -307,11 +312,11 @@ def main():
     p.add_argument("--param", type=int, default=0, help="index of the drifting CX coupler")
     p.add_argument("--sensitivity", type=float, default=0.025)
     p.add_argument("--drift-std", type=float, default=0.5, help="stationary drift std s")
-    p.add_argument("--shots-per-candidate", type=int, default=50, help="S (one slot)")
-    p.add_argument("--batch-size", type=int, default=20, help="B (even)")
+    p.add_argument("--shots-per-candidate", type=int, default=50, help="S (one candidate)")
+    p.add_argument("--batch-size", type=int, default=20, help="B, candidates per epoch (even)")
     p.add_argument("--sigma-p", type=float, default=0.25, help="probe rms")
     # tracking
-    p.add_argument("--taus", type=str, default="30,100,300,1000,3000", help="tau in slots")
+    p.add_argument("--taus", type=str, default="30,100,300,1000,3000", help="tau in candidates")
     p.add_argument("--gains", type=str, default="0.06,0.12,0.25,0.5,1.0", help="gains tried per tau")
     p.add_argument("--target", type=float, default=0.5, help="R_t: target c/s^2")
     # variance / neighbor

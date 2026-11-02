@@ -100,7 +100,7 @@ class RLControlAgent:
         observations: np.ndarray,
     ) -> Dict[str, float]:
         """
-        Performs masked policy gradient update given a batch of actions and observations.
+        Performs masked policy gradient update given an epoch of actions and observations.
 
         Args:
             actions: sampled parameter vectors, shape (B, P)
