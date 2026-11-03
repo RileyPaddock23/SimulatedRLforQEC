@@ -2,3 +2,4 @@ numpy
 stim
 pymatching
 matplotlib
+stimbposd
