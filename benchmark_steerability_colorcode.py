@@ -1,12 +1,12 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from rl_agent import RLControlAgent
-from color_code_env import RotatedSurfaceCodeEnv
+from color_code_env import ColorCodeEnv
 SEED = 163
 
 
 def run_calibration(num_epochs=40):
-    env = RotatedSurfaceCodeEnv(
+    env = ColorCodeEnv(
         distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
         drift_frequency=0.0, drift_amplitude=0.0, seed=SEED,
     )
@@ -36,7 +36,7 @@ def run_frequency_scan():
     freqs = [1/1000, 1/500, 1/250, 1/150, 1/100, 1/50, 1/25, 1/10]
     ler_red_pct, r_advantage = [], []
     for f in freqs:
-        env = RotatedSurfaceCodeEnv(
+        env = ColorCodeEnv(
             distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
             drift_frequency=f, drift_amplitude=0.6, seed=SEED,
         )
