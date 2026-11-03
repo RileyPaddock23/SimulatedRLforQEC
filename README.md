@@ -6,11 +6,31 @@ An RL agent keeps a rotated surface code's control parameters calibrated while t
 
 | File | Contents |
 |---|---|
-| `surface_code_env.py` | Stim environment for the rotated surface code with sinusoidal or 1/f^α drift. |
+| `qec_env.py` | `QECCodeEnv`: generic Stim environment for any QEC circuit, with pluggable noise placement, drift (sinusoidal or 1/f^α) and decoder. |
+| `surface_code_env.py` | `RotatedSurfaceCodeEnv`: rotated surface code on top of `QECCodeEnv`, decoded with PyMatching. |
+| `color_code_env.py` | `ColorCodeEnv`: color code on top of `QECCodeEnv`, decoded with BP+OSD (`stimbposd`). |
 | `rl_agent.py` | The PEPG agent (`RLControlAgent`). |
-| `run_experiment.py` | Command-line script that runs one closed-loop trial and prints Fixed, RL and Optimal side by side. |
+| `run_experiment.py` | Command-line script (`--code surface` or `--code color`) that runs one closed-loop trial and prints Fixed, RL and Optimal side by side. |
 | `minimal_control_env.py` | Single-parameter control model and the analytic bounds. |
 | `run_minimal_experiment.py` | Checks the analytic results against the minimal model. |
+
+### Using another code
+
+`QECCodeEnv` takes any noiseless Stim memory circuit with `DETECTOR`s and `OBSERVABLE_INCLUDE`s. Any noise already in the circuit is stripped, because the environment supplies its own.
+
+```python
+import stim
+from qec_env import QECCodeEnv, NoiseModel, ArmaDrift
+
+env = QECCodeEnv(
+    circuit=stim.Circuit.from_file("my_code.stim"),
+    decoder="bposd",                       # "pymatching", "bposd", or a callable: noisy circuit -> object with decode_batch
+    noise_model=NoiseModel(),              # which gates get drift-controlled noise (defaults are inferred from stim's gate data)
+    drift=ArmaDrift(alpha=2.0, max_epochs=100),
+)
+```
+
+The agent only needs `env.num_params`, `env.num_detectors`, `env.M` and `env.evaluate_policy`, so `RLControlAgent` and `run_trial` work unchanged.
 
 ### The model
 
@@ -20,6 +40,15 @@ An RL agent keeps a rotated surface code's control parameters calibrated while t
 - **Factor graph `M` (detectors × parameters).** `M[j, i] = 1` if an error from parameter *i* can flip detector *j*. It is built from Stim's detector error model.
 - **Agent.** The agent keeps a Gaussian policy `N(mu, sigma)` over the parameters and draws antithetic samples from it. Its reward is `-EDR` for each detector. Before each gradient step, `M` masks the advantages, so a parameter only learns from the detectors it can affect.
 - **Time.** Time runs on a physical shot clock. Each update costs `batch_size × shots_per_candidate` shots, and the drift keeps moving while the candidates are measured. One reference epoch is 7000 shots.
+
+### Qubit parameters
+
+`--params-per-qubit N` gives every qubit N extra parameters, such as its idle frequency, which sets T1 through nearby TLS defects. A mis-set qubit parameter raises the error rate of **every** gate on that qubit: its couplers (weight `--qubit-weight-2q`) and its own single-qubit/reset/readout noise (weight `--qubit-weight-1q`). The placement of Stim channels stays the same.
+
+- Qubit parameters come after the gate parameters in the parameter vector (`env.qubit_param_slice`).
+- `--params-per-gate 0` leaves only the qubit parameters.
+- The `--qubit-*` drift flags fall back to the gate drift flags when they aren't set.
+- A qubit parameter's column of `M` is the union of the detectors of all its gates, so its mask is less local than a gate parameter's.
 
 ### Drift profiles
 

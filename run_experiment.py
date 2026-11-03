@@ -1,6 +1,6 @@
 """
-RL Drift-Tracking Experiment on the Rotated Surface Code
-========================================================
+RL Drift-Tracking Experiment on a QEC Code
+==========================================
 Closed-loop PEPG steering of drifting control parameters, driven only by
 detector error rates (EDR). Time advances with cumulative physical shots
 (a "shot clock"): each policy update costs batch_size * shots_per_candidate
@@ -13,6 +13,7 @@ Compares three policies at periodic checkpoints:
 
 Examples:
     python run_experiment.py --drift sinusoidal
+    python run_experiment.py --code surface --drift sinusoidal
     python run_experiment.py --drift arma --arma-alpha 0.67
     python run_experiment.py --drift arma --arma-alpha 1.0 --arma-white 0.2 --plot
 """
@@ -25,14 +26,18 @@ from typing import Dict
 import numpy as np
 
 from rl_agent import RLControlAgent
+from qec_env import QECCodeEnv, SinusoidalDrift
 from surface_code_env import RotatedSurfaceCodeEnv
+from color_code_env import ColorCodeEnv
+
+CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
 
 # Reference epoch used to convert shots -> environment time: 20 candidates * 350 shots
 SHOTS_PER_EPOCH_REF = 7000.0
 
 
 def run_trial(
-    env: RotatedSurfaceCodeEnv,
+    env: QECCodeEnv,
     agent: RLControlAgent,
     total_shots: int,
     shots_per_candidate: int,
@@ -42,9 +47,12 @@ def run_trial(
     verbose: bool = True,
 ) -> Dict:
     fixed_policy = np.zeros(env.num_params, dtype=np.float32)
+    # Tracking error is also reported per parameter block (gate vs. qubit) that the env has
+    blocks = {name: sl for name, sl in (("gate", env.gate_param_slice), ("qubit", env.qubit_param_slice)) if sl.stop > sl.start}
     history = {k: [] for k in (
         "shot", "epoch", "ler_fixed", "ler_rl", "ler_opt",
         "edr_fixed", "edr_rl", "edr_opt", "tracking_rms", "mu_0", "p_opt_0",
+        *(f"tracking_rms_{name}" for name in blocks),
     )}
 
     if verbose:
@@ -73,6 +81,8 @@ def run_trial(
                 history[f"ler_{tag}"].append(ev["logical_error_rate"])
                 history[f"edr_{tag}"].append(ev["mean_edr"])
             history["tracking_rms"].append(rms)
+            for name, sl in blocks.items():
+                history[f"tracking_rms_{name}"].append(float(np.sqrt(np.mean((agent.mu[sl] - p_opt[sl]) ** 2))))
             history["mu_0"].append(float(agent.mu[0]))
             history["p_opt_0"].append(float(p_opt[0]))
 
@@ -98,7 +108,8 @@ def run_trial(
     # Steady-state summary over the last third of checkpoints
     tail = slice(-max(1, len(history["shot"]) // 3), None)
     s = {k: float(np.mean(history[k][tail])) for k in (
-        "ler_fixed", "ler_rl", "ler_opt", "edr_fixed", "edr_rl", "edr_opt", "tracking_rms")}
+        "ler_fixed", "ler_rl", "ler_opt", "edr_fixed", "edr_rl", "edr_opt", "tracking_rms",
+        *(f"tracking_rms_{name}" for name in blocks))}
     # Steering advantage: fraction of the fixed-vs-optimal EDR gap closed by RL
     s["steering_advantage"] = (s["edr_fixed"] - s["edr_rl"]) / max(1e-5, s["edr_fixed"] - s["edr_opt"])
     s["ler_reduction_pct"] = 100.0 * (s["ler_fixed"] - s["ler_rl"]) / max(1e-6, s["ler_fixed"])
@@ -137,6 +148,7 @@ def plot_history(history: Dict, title: str, path: str):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # Environment
+    p.add_argument("--code", choices=sorted(CODES), default="color")
     p.add_argument("--distance", type=int, default=5)
     p.add_argument("--rounds", type=int, default=5)
     p.add_argument("--params-per-gate", type=int, default=1)
@@ -147,6 +159,18 @@ def main():
     p.add_argument("--arma-white", type=float, default=0.1, help="fraction of drift variance in the white noise floor")
     p.add_argument("--arma-sigma", type=float, default=0.6)
     p.add_argument("--arma-common", type=float, default=0.08, help="chip-wide common-mode fraction")
+    # Qubit parameters (e.g. idle frequency): each affects every gate on its qubit. Unset drift flags copy the gate ones.
+    p.add_argument("--params-per-qubit", type=int, default=0, help="0 = gate parameters only")
+    p.add_argument("--qubit-drift", choices=["sinusoidal", "arma"], default=None)
+    p.add_argument("--qubit-drift-frequency", type=float, default=None)
+    p.add_argument("--qubit-drift-amplitude", type=float, default=None)
+    p.add_argument("--qubit-arma-alpha", type=float, default=None)
+    p.add_argument("--qubit-arma-white", type=float, default=None)
+    p.add_argument("--qubit-arma-sigma", type=float, default=None)
+    p.add_argument("--qubit-arma-common", type=float, default=None)
+    p.add_argument("--qubit-sensitivity", type=float, default=None, help="default: same as the gate sensitivity")
+    p.add_argument("--qubit-weight-2q", type=float, default=1.0, help="weight of a qubit parameter on its couplers")
+    p.add_argument("--qubit-weight-1q", type=float, default=1.0, help="weight on its own single-qubit/reset/readout noise")
     # Training / evaluation
     p.add_argument("--total-shots", type=int, default=245_000)
     p.add_argument("--shots-per-candidate", type=int, default=50)
@@ -159,7 +183,7 @@ def main():
     args = p.parse_args()
 
     t0 = time.time()
-    env = RotatedSurfaceCodeEnv(
+    env = CODES[args.code](
         distance=args.distance,
         rounds=args.rounds,
         params_per_gate=args.params_per_gate,
@@ -172,6 +196,17 @@ def main():
         arma_common_fraction=args.arma_common,
         max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1,
         seed=args.seed,
+        params_per_qubit=args.params_per_qubit,
+        qubit_drift_profile=args.qubit_drift,
+        qubit_drift_frequency=args.qubit_drift_frequency,
+        qubit_drift_amplitude=args.qubit_drift_amplitude,
+        qubit_arma_alpha=args.qubit_arma_alpha,
+        qubit_arma_white_fraction=args.qubit_arma_white,
+        qubit_arma_sigma=args.qubit_arma_sigma,
+        qubit_arma_common_fraction=args.qubit_arma_common,
+        qubit_sensitivity=args.qubit_sensitivity,
+        qubit_weight_2q=args.qubit_weight_2q,
+        qubit_weight_1q=args.qubit_weight_1q,
     )
     agent = RLControlAgent(
         num_params=env.num_params,
@@ -188,11 +223,13 @@ def main():
         seed=args.seed,
     )
 
-    drift_desc = (f"sinusoidal f={args.drift_frequency:.4g}/epoch A={args.drift_amplitude}" if args.drift == "sinusoidal"
-                  else f"1/f^{args.arma_alpha} + {args.arma_white:.0%} white floor, sigma={args.arma_sigma}")
-    print(f"d={args.distance} rounds={args.rounds} | {env.num_params} params, {env.num_detectors} detectors, "
+    describe = lambda d: (f"sinusoidal f={d.frequency:.4g}/epoch A={d.amplitude}" if isinstance(d, SinusoidalDrift)
+                          else f"1/f^{d.alpha} + {d.white_fraction:.0%} white floor, sigma={d.sigma}")
+    drift_desc = describe(env.drift)
+    print(f"{args.code} code d={args.distance} rounds={args.rounds} | {env.num_params} params "
+          f"({env.num_gate_params} gate + {env.num_qubit_params} qubit), {env.num_detectors} detectors, "
           f"M sparsity {1.0 - env.M.mean():.3f} | setup {time.time() - t0:.1f}s")
-    print(f"Drift: {drift_desc}")
+    print(f"Drift: {drift_desc}" + (f" | qubit drift: {describe(env.qubit_drift)}" if env.num_qubit_params else ""))
     print(f"Shot budget {args.total_shots:,} | S={args.shots_per_candidate} x B={args.batch_size} per update\n")
 
     result = run_trial(
@@ -210,7 +247,8 @@ def main():
           f"(RL reduction {s['ler_reduction_pct']:.1f}%)")
     print(f"  EDR  fixed {s['edr_fixed']:.4f} | RL {s['edr_rl']:.4f} | opt {s['edr_opt']:.4f}  "
           f"(steering advantage {s['steering_advantage']:.2f})")
-    print(f"  Tracking RMS error |mu - p_opt|: {s['tracking_rms']:.3f}")
+    print(f"  Tracking RMS error |mu - p_opt|: {s['tracking_rms']:.3f}"
+          + "".join(f" | {name} {s[f'tracking_rms_{name}']:.3f}" for name in ("gate", "qubit") if f"tracking_rms_{name}" in s))
 
     out = args.out or f"results_{args.drift}.json"
     with open(out, "w") as f:
