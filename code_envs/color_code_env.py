@@ -6,7 +6,7 @@ on top of the generic `QECCodeEnv` (see qec_env.py for the noise and drift model
 Color code errors don't decompose into matchable edges, so it is decoded with BP+OSD.
 """
 
-from qec_env import GeneratedCodeEnv
+from code_envs.qec_env import GeneratedCodeEnv
 
 
 class ColorCodeEnv(GeneratedCodeEnv):

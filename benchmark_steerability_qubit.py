@@ -20,8 +20,8 @@ import os
 import numpy as np
 
 from rl_agent import RLControlAgent
-from surface_code_env import RotatedSurfaceCodeEnv
-from color_code_env import ColorCodeEnv
+from code_envs.surface_code_env import RotatedSurfaceCodeEnv
+from code_envs.color_code_env import ColorCodeEnv
 
 SEED = 163
 FREQS = [1/1000, 1/500, 1/250, 1/150, 1/100, 1/50, 1/25, 1/10]

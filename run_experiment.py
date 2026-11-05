@@ -26,14 +26,33 @@ from typing import Dict
 import numpy as np
 
 from rl_agent import RLControlAgent
-from qec_env import QECCodeEnv, SinusoidalDrift
-from surface_code_env import RotatedSurfaceCodeEnv
-from color_code_env import ColorCodeEnv
+from code_envs.qec_env import QECCodeEnv
+from code_envs.noise_envs import SinusoidalDrift
+from code_envs.surface_code_env import RotatedSurfaceCodeEnv
+from code_envs.color_code_env import ColorCodeEnv
 
 CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
 
 # Reference epoch used to convert shots -> environment time: 20 candidates * 350 shots
 SHOTS_PER_EPOCH_REF = 7000.0
+
+
+def make_agent(env: QECCodeEnv, seed: int) -> RLControlAgent:
+    """The masked PEPG agent with the default hyperparameters used by every experiment."""
+    return RLControlAgent(
+        num_params=env.num_params,
+        num_detectors=env.num_detectors,
+        mask_matrix=env.M,
+        lr_mu=0.05,
+        lr_sigma=0.01,
+        lr_baseline=0.15,
+        entropy_reg=0.005,
+        sigma_init=0.25,
+        sigma_min=0.08,
+        sigma_max=0.35,
+        use_adam=True,
+        seed=seed,
+    )
 
 
 def run_trial(
@@ -64,6 +83,7 @@ def run_trial(
     cur_shot = 0
     next_eval = 0
     update_shots = batch_size * shots_per_candidate
+    sq_err = []  # (mu - p_opt)^2 after each update
 
     while True:
         # Periodic evaluation checkpoint (static snapshot at the current physical time)
@@ -104,6 +124,10 @@ def run_trial(
 
         agent.update(cands, obs)
         cur_shot += update_shots
+        sq_err.append((agent.mu - env.get_drift_opt(cur_shot / SHOTS_PER_EPOCH_REF)) ** 2)
+
+    # Per-parameter tracking RMS over the last third of updates (no extra shots needed)
+    per_param_rms = np.sqrt(np.mean(sq_err[-max(1, len(sq_err) // 3):], axis=0)) if sq_err else np.zeros(env.num_params)
 
     # Steady-state summary over the last third of checkpoints
     tail = slice(-max(1, len(history["shot"]) // 3), None)
@@ -114,7 +138,7 @@ def run_trial(
     s["steering_advantage"] = (s["edr_fixed"] - s["edr_rl"]) / max(1e-5, s["edr_fixed"] - s["edr_opt"])
     s["ler_reduction_pct"] = 100.0 * (s["ler_fixed"] - s["ler_rl"]) / max(1e-6, s["ler_fixed"])
     s["num_updates"] = total_shots // update_shots
-    return {"summary": s, "history": history}
+    return {"summary": s, "history": history, "per_param_tracking_rms": per_param_rms.tolist()}
 
 
 def plot_history(history: Dict, title: str, path: str):
@@ -208,20 +232,7 @@ def main():
         qubit_weight_2q=args.qubit_weight_2q,
         qubit_weight_1q=args.qubit_weight_1q,
     )
-    agent = RLControlAgent(
-        num_params=env.num_params,
-        num_detectors=env.num_detectors,
-        mask_matrix=env.M,
-        lr_mu=0.05,
-        lr_sigma=0.01,
-        lr_baseline=0.15,
-        entropy_reg=0.005,
-        sigma_init=0.25,
-        sigma_min=0.08,
-        sigma_max=0.35,
-        use_adam=True,
-        seed=args.seed,
-    )
+    agent = make_agent(env, seed=args.seed)
 
     describe = lambda d: (f"sinusoidal f={d.frequency:.4g}/epoch A={d.amplitude}" if isinstance(d, SinusoidalDrift)
                           else f"1/f^{d.alpha} + {d.white_fraction:.0%} white floor, sigma={d.sigma}")

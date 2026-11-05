@@ -5,7 +5,7 @@ Distance-d rotated surface code memory experiment on top of the generic `QECCode
 (see qec_env.py for the noise and drift model), decoded with PyMatching.
 """
 
-from qec_env import GeneratedCodeEnv
+from code_envs.qec_env import GeneratedCodeEnv
 
 
 class RotatedSurfaceCodeEnv(GeneratedCodeEnv):

@@ -30,7 +30,7 @@ from typing import Dict, Optional, Union
 import numpy as np
 import stim
 
-from surface_code_env import RotatedSurfaceCodeEnv
+from code_envs.surface_code_env import RotatedSurfaceCodeEnv
 
 PAULIS = "IXYZ"
 
@@ -60,7 +60,7 @@ class MinimalControlEnv:
             distance=distance, rounds=rounds, base_error=base_error, sensitivity=sensitivity,
             drift_profile="sinusoidal", drift_amplitude=0.0, seed=seed,
         )
-        n_cx = self.code.num_cx_gates
+        n_cx = self.code.backend.num_cx_gates
         if not 0 <= param_index < n_cx:
             raise ValueError(f"param_index must be a CX coupler parameter (0..{n_cx - 1})")
         self.i = param_index
@@ -89,9 +89,9 @@ class MinimalControlEnv:
     # ------------------------------------------------------------------ sampling
     def _flip_table(self, gate: int, lines) -> np.ndarray:
         """Pauli -> M_i detector-flip table, shape (instances, 16, |M_i|), for one CX coupler."""
-        pair = self.code.cx_pairs[gate]
+        pair = self.code.backend.cx_pairs[gate]
         positions = []
-        for pos, op in enumerate(self.code.flat_instructions):
+        for pos, op in enumerate(self.code.backend.flat_instructions):
             if op.name == "CX":
                 t = op.targets_copy()
                 if any((t[k].value, t[k + 1].value) == pair for k in range(0, len(t), 2)):
@@ -110,7 +110,7 @@ class MinimalControlEnv:
 
     def _setup_fast_sampler(self):
         """Flip tables for each modeled coupler, plus a baseline sampler."""
-        lines = [str(op) for op in self.code.flat_instructions]
+        lines = [str(op) for op in self.code.backend.flat_instructions]
         self._flips = [self._flip_table(g, lines) for g in self.idx]
         if not self._flips[0].any(axis=(0, 1)).all():
             raise RuntimeError("Flip table does not cover every detector in M_i")

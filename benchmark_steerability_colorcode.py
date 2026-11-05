@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from rl_agent import RLControlAgent
-from color_code_env import ColorCodeEnv
+from code_envs.color_code_env import ColorCodeEnv
 SEED = 163
 
 
