@@ -185,37 +185,31 @@ def main():
 
     t0 = time.time()
 
-    if args.code == "color488":
-        env = CODES[args.code](
-            
-        )
-
-    else:
-        env = CODES[args.code](
-            distance=args.distance,
-            rounds=args.rounds,
-            params_per_gate=args.params_per_gate,
-            drift_profile=args.drift,
-            drift_frequency=args.drift_frequency,
-            drift_amplitude=args.drift_amplitude,
-            arma_alpha=args.arma_alpha,
-            arma_white_fraction=args.arma_white,
-            arma_sigma=args.arma_sigma,
-            arma_common_fraction=args.arma_common,
-            max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1,
-            seed=args.seed,
-            params_per_qubit=args.params_per_qubit,
-            qubit_drift_profile=args.qubit_drift,
-            qubit_drift_frequency=args.qubit_drift_frequency,
-            qubit_drift_amplitude=args.qubit_drift_amplitude,
-            qubit_arma_alpha=args.qubit_arma_alpha,
-            qubit_arma_white_fraction=args.qubit_arma_white,
-            qubit_arma_sigma=args.qubit_arma_sigma,
-            qubit_arma_common_fraction=args.qubit_arma_common,
-            qubit_sensitivity=args.qubit_sensitivity,
-            qubit_weight_2q=args.qubit_weight_2q,
-            qubit_weight_1q=args.qubit_weight_1q,
-        )
+    env = CODES[args.code](
+        distance=args.distance,
+        rounds=args.rounds,
+        params_per_gate=args.params_per_gate,
+        drift_profile=args.drift,
+        drift_frequency=args.drift_frequency,
+        drift_amplitude=args.drift_amplitude,
+        arma_alpha=args.arma_alpha,
+        arma_white_fraction=args.arma_white,
+        arma_sigma=args.arma_sigma,
+        arma_common_fraction=args.arma_common,
+        max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1,
+        seed=args.seed,
+        params_per_qubit=args.params_per_qubit,
+        qubit_drift_profile=args.qubit_drift,
+        qubit_drift_frequency=args.qubit_drift_frequency,
+        qubit_drift_amplitude=args.qubit_drift_amplitude,
+        qubit_arma_alpha=args.qubit_arma_alpha,
+        qubit_arma_white_fraction=args.qubit_arma_white,
+        qubit_arma_sigma=args.qubit_arma_sigma,
+        qubit_arma_common_fraction=args.qubit_arma_common,
+        qubit_sensitivity=args.qubit_sensitivity,
+        qubit_weight_2q=args.qubit_weight_2q,
+        qubit_weight_1q=args.qubit_weight_1q,
+    )
     agent = RLControlAgent(
         num_params=env.num_params,
         num_detectors=env.num_detectors,
