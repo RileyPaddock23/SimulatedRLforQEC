@@ -29,8 +29,9 @@ from rl_agent import RLControlAgent
 from qec_env import QECCodeEnv, SinusoidalDrift
 from surface_code_env import RotatedSurfaceCodeEnv
 from color_code_env import ColorCodeEnv
+from color_code_env import ColorCode488Env
 
-CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
+CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv, "color488": ColorCode488Env}
 
 # Reference epoch used to convert shots -> environment time: 20 candidates * 350 shots
 SHOTS_PER_EPOCH_REF = 7000.0
@@ -183,31 +184,38 @@ def main():
     args = p.parse_args()
 
     t0 = time.time()
-    env = CODES[args.code](
-        distance=args.distance,
-        rounds=args.rounds,
-        params_per_gate=args.params_per_gate,
-        drift_profile=args.drift,
-        drift_frequency=args.drift_frequency,
-        drift_amplitude=args.drift_amplitude,
-        arma_alpha=args.arma_alpha,
-        arma_white_fraction=args.arma_white,
-        arma_sigma=args.arma_sigma,
-        arma_common_fraction=args.arma_common,
-        max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1,
-        seed=args.seed,
-        params_per_qubit=args.params_per_qubit,
-        qubit_drift_profile=args.qubit_drift,
-        qubit_drift_frequency=args.qubit_drift_frequency,
-        qubit_drift_amplitude=args.qubit_drift_amplitude,
-        qubit_arma_alpha=args.qubit_arma_alpha,
-        qubit_arma_white_fraction=args.qubit_arma_white,
-        qubit_arma_sigma=args.qubit_arma_sigma,
-        qubit_arma_common_fraction=args.qubit_arma_common,
-        qubit_sensitivity=args.qubit_sensitivity,
-        qubit_weight_2q=args.qubit_weight_2q,
-        qubit_weight_1q=args.qubit_weight_1q,
-    )
+
+    if args.code == "color488":
+        env = CODES[args.code](
+            
+        )
+
+    else:
+        env = CODES[args.code](
+            distance=args.distance,
+            rounds=args.rounds,
+            params_per_gate=args.params_per_gate,
+            drift_profile=args.drift,
+            drift_frequency=args.drift_frequency,
+            drift_amplitude=args.drift_amplitude,
+            arma_alpha=args.arma_alpha,
+            arma_white_fraction=args.arma_white,
+            arma_sigma=args.arma_sigma,
+            arma_common_fraction=args.arma_common,
+            max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1,
+            seed=args.seed,
+            params_per_qubit=args.params_per_qubit,
+            qubit_drift_profile=args.qubit_drift,
+            qubit_drift_frequency=args.qubit_drift_frequency,
+            qubit_drift_amplitude=args.qubit_drift_amplitude,
+            qubit_arma_alpha=args.qubit_arma_alpha,
+            qubit_arma_white_fraction=args.qubit_arma_white,
+            qubit_arma_sigma=args.qubit_arma_sigma,
+            qubit_arma_common_fraction=args.qubit_arma_common,
+            qubit_sensitivity=args.qubit_sensitivity,
+            qubit_weight_2q=args.qubit_weight_2q,
+            qubit_weight_1q=args.qubit_weight_1q,
+        )
     agent = RLControlAgent(
         num_params=env.num_params,
         num_detectors=env.num_detectors,
