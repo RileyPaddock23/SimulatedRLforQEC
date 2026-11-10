@@ -7,7 +7,7 @@ SEED = 163
 
 def run_calibration(num_epochs=40):
     env = ColorCodeEnv(
-        distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
+        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
         drift_frequency=0.0, drift_amplitude=0.0, seed=SEED,
     )
     rng = np.random.default_rng(SEED)
@@ -37,7 +37,7 @@ def run_frequency_scan():
     ler_red_pct, r_advantage = [], []
     for f in freqs:
         env = ColorCodeEnv(
-            distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
+            distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
             drift_frequency=f, drift_amplitude=0.6, seed=SEED,
         )
         agent = RLControlAgent(

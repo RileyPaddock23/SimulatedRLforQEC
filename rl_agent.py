@@ -38,8 +38,11 @@ class RLControlAgent:
         grad_clip: float = 2.0,
         use_adam: bool = True,
         seed: int = 42,
+        steer_mask: Optional[np.ndarray] = None,  # bool per parameter; False = never probed or moved (default: all steered)
     ):
         self.num_params = num_params
+        self.steer_mask = (np.ones(num_params, dtype=np.float32) if steer_mask is None
+                           else np.asarray(steer_mask, dtype=np.float32))
         self.num_detectors = num_detectors
         self.M = mask_matrix.astype(np.float32)  # Shape (O, P)
         self.lr_mu = lr_mu
@@ -77,20 +80,24 @@ class RLControlAgent:
     def sample_policies(self, batch_size: int, antithetic: bool = True) -> np.ndarray:
         """
         Samples candidate policy parameter vectors p ~ N(mu, Sigma).
-        Uses antithetic perturbation pairs (mu + delta, mu - delta) if antithetic=True.
+        Uses antithetic perturbation pairs (mu + delta, mu - delta) if antithetic=True, in
+        interleaved order (+delta_0, -delta_0, +delta_1, ...): when candidates are measured
+        one after another, each pair is measured back to back, so drift between the two
+        halves of a pair doesn't bias the gradient. Parameters outside steer_mask stay at mu.
         Returns:
             np.ndarray of shape (batch_size, num_params)
         """
         if antithetic:
             half_batch = (batch_size + 1) // 2
             noise = self.rng.normal(0.0, 1.0, size=(half_batch, self.num_params)).astype(np.float32)
-            delta = noise * self.sigma
-            pos = self.mu + delta
-            neg = self.mu - delta
-            samples = np.vstack([pos, neg])[:batch_size]
+            delta = noise * self.sigma * self.steer_mask
+            samples = np.empty((2 * half_batch, self.num_params), dtype=np.float32)
+            samples[0::2] = self.mu + delta
+            samples[1::2] = self.mu - delta
+            samples = samples[:batch_size]
         else:
             noise = self.rng.normal(0.0, 1.0, size=(batch_size, self.num_params)).astype(np.float32)
-            samples = self.mu + noise * self.sigma
+            samples = self.mu + noise * self.sigma * self.steer_mask
 
         return samples
 
@@ -132,6 +139,10 @@ class RLControlAgent:
             np.mean(masked_advantage * (diff ** 2 - self.sigma ** 2) / (self.sigma ** 3), axis=0)
             + (self.entropy_reg / self.sigma)
         )
+
+        # Frozen parameters get no update (their probe width is irrelevant, so sigma stays put too)
+        grad_mu = grad_mu * self.steer_mask
+        grad_sigma = grad_sigma * self.steer_mask
 
         # Gradient clipping for stability
         if self.grad_clip > 0:

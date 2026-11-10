@@ -37,7 +37,7 @@ from code_envs.color_code_env import ColorCodeEnv
 from run_experiment import SHOTS_PER_EPOCH_REF, make_agent, run_trial
 
 CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
-TYPES = ("CX", "1q", "qubit")
+TYPES = ("CX", "1q", "reset", "meas", "qubit")
 
 
 def parameter_features(env) -> dict:
@@ -58,10 +58,11 @@ def parameter_features(env) -> dict:
     on_boundary = {q: degree[q] < max_degree[role[q]] for q in role}
 
     kind, roles, boundary = [], [], []
-    ppg = env.num_gate_params // backend.num_sources if env.num_gate_params else 0
-    for src in backend.sources:
+    gate_sources = env.blocks[0].owners
+    ppg = env.num_gate_params // max(1, len(gate_sources))
+    for src in gate_sources:
         for _ in range(ppg):
-            kind.append("CX" if src.kind == "2q" else "1q")
+            kind.append("CX" if src.kind == "2q" else src.kind)
             roles.append("coupler" if src.kind == "2q" else role[src.qubits[0]])
             boundary.append(any(on_boundary[q] for q in src.qubits))
     ppq = env.num_qubit_params // max(1, len(env.param_qubits or []))
@@ -155,7 +156,7 @@ def summarize(cfg: dict):
 
 # ---------------------------------------------------------------------- plotting
 
-COLORS = {"CX": "C0", "1q": "C1", "qubit": "C2"}
+COLORS = {"CX": "C0", "1q": "C1", "reset": "C3", "meas": "C4", "qubit": "C2"}
 
 
 def plot(configs, path: str):
@@ -178,7 +179,7 @@ def plot(configs, path: str):
                 sel = (kind == t) & (boundary == b)
                 ax.scatter(x[sel], rms[sel], marker=marker, color=COLORS[t], alpha=0.8)
         ax.set_xscale("log")
-        ax.set_xticks([2, 5, 10, 20, 40])
+        ax.set_xticks([1, 2, 5, 10, 20, 40])
         ax.xaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
         ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
         ax.set_xlabel("Noisy operations controlled")

@@ -36,7 +36,7 @@ OUT_DIR = "qubit_steerability_runs"
 
 def scan_point(code: str, mode: str, f: float, lr_mu: float = 0.05) -> dict:
     env = CODES[code](
-        distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
+        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
         drift_frequency=f, drift_amplitude=0.6, seed=SEED, **MODES[mode],
     )
     agent = RLControlAgent(

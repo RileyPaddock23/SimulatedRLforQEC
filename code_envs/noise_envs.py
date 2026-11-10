@@ -71,7 +71,7 @@ def generate_power_law_noise(
 class SinusoidalDrift:
     """p_opt(t) = A * sin(2 pi f_m t), with f_m = f * (1 + 0.5 m) for the m-th parameter of each owner."""
 
-    def __init__(self, frequency: float = 1.0 / 150.0, amplitude: float = 0.6):
+    def __init__(self, frequency: float = 1.0 / 150.0, amplitude: float = 2.0):
         self.frequency = frequency
         self.amplitude = amplitude
 
@@ -95,7 +95,7 @@ class ArmaDrift:
         self,
         alpha: float = 0.67,  # 0 = white, 1 = flicker, 2 = random walk
         white_fraction: float = 0.1,  # fraction of drift variance in the white floor
-        sigma: float = 0.60,
+        sigma: float = 2.0,
         common_fraction: float = 0.08,
         max_epochs: int = 500,
     ):
@@ -143,40 +143,68 @@ def make_drift(profile: str, frequency: float, amplitude: float, alpha: float, w
 
 
 # ---------------------------------------------------------------------- noise model
+# SI1000-style noise (Gidney, Newman & McEwen 2021, "Benchmarking the planar honeycomb
+# code"): with p the two-qubit gate error rate,
+#   two-qubit gate         DEPOLARIZE2(p) after
+#   single-qubit gate      DEPOLARIZE1(p / 10) after
+#   reset                  X_ERROR(2p) after (Z_ERROR for X-basis resets)
+#   measurement            X_ERROR(5p) before (Z_ERROR for X-basis measurements)
+#   idle, gate moment      DEPOLARIZE1(p / 10) on qubits a TICK-delimited moment leaves untouched
+#   idle, readout moment   DEPOLARIZE1(2p) on untouched qubits in a moment with a measurement or reset
 
-def _default_gate_sets() -> Tuple[Set[str], Set[str], Set[str]]:
-    """Classifies stim gates into (two-qubit unitaries, single-qubit unitaries/resets, single-qubit measurements)."""
-    two_qubit, after, before = set(), set(), set()
+def _default_gate_sets() -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
+    """Classifies stim gates into (two-qubit unitaries, single-qubit unitaries, resets, measurements)."""
+    two_qubit, single_qubit, reset, measure = set(), set(), set(), set()
     for name, g in stim.gate_data().items():
         if name == "MPAD" or name.startswith("HERALDED_") or (g.is_noisy_gate and not g.produces_measurements):
             continue
         if g.is_two_qubit_gate and g.is_unitary:
             two_qubit.add(name)
         elif g.is_single_qubit_gate:
-            if g.is_unitary or g.is_reset:
-                after.add(name)
+            if g.is_unitary:
+                single_qubit.add(name)
+            if g.is_reset:
+                reset.add(name)
             if g.produces_measurements:
-                before.add(name)
-    return two_qubit, after, before
+                measure.add(name)
+    return two_qubit, single_qubit, reset, measure
+
+
+def flip_channel(gate: str) -> str:
+    """The classical flip error for a reset or measurement: Z_ERROR in the X basis, X_ERROR in the Y or Z basis."""
+    return "Z_ERROR" if gate.endswith("X") else "X_ERROR"
 
 
 @dataclass
 class NoiseModel:
     """
-    Where the drift-controlled depolarizing channels are placed. A gate set left as
-    None is inferred from stim's gate metadata, so any circuit is covered by default.
+    Where the drift-controlled error channels are placed, and each channel's base rate as
+    a multiple of the two-qubit rate p (SI1000 by default). A gate set left as None is
+    inferred from stim's gate metadata, so any circuit is covered by default. A scale of 0
+    drops that kind of channel.
     """
-    two_qubit_gates: Optional[Set[str]] = None  # DEPOLARIZE2 after each target pair (default: all 2-qubit unitaries)
-    after_gates: Optional[Set[str]] = None  # DEPOLARIZE1 after (default: 1-qubit unitaries and resets)
-    before_gates: Optional[Set[str]] = None  # DEPOLARIZE1 before, i.e. readout error (default: 1-qubit measurements)
-    include_single_qubit_noise: bool = True
+    two_qubit_gates: Optional[Set[str]] = None  # default: all 2-qubit unitaries
+    single_qubit_gates: Optional[Set[str]] = None  # default: all 1-qubit unitaries
+    reset_gates: Optional[Set[str]] = None  # default: all 1-qubit resets (incl. MR)
+    measure_gates: Optional[Set[str]] = None  # default: all 1-qubit measurements (incl. MR)
+    include_single_qubit_noise: bool = True  # False keeps only the two-qubit channels
+    scale_2q: float = 1.0
+    scale_1q: float = 0.1
+    scale_reset: float = 2.0
+    scale_measure: float = 5.0
+    scale_idle: float = 0.1  # idle during a moment of gates
+    scale_idle_mr: float = 2.0  # idle during a moment with a measurement or reset
     max_error: float = 0.15  # error rates are clipped to [base_s, max_error]
 
-    def resolved(self) -> Tuple[Set[str], Set[str], Set[str]]:
-        two_qubit, after, before = _default_gate_sets()
-        return (
-            set(self.two_qubit_gates) if self.two_qubit_gates is not None else two_qubit,
-            set(self.after_gates) if self.after_gates is not None else after,
-            set(self.before_gates) if self.before_gates is not None else before,
-        )
+    def resolved(self) -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
+        defaults = _default_gate_sets()
+        given = (self.two_qubit_gates, self.single_qubit_gates, self.reset_gates, self.measure_gates)
+        return tuple(set(g) if g is not None else d for g, d in zip(given, defaults))
 
+    def scales(self) -> Dict[str, float]:
+        """Base-rate multiplier of each source kind, without the kinds switched off."""
+        scales = {"2q": self.scale_2q}
+        if self.include_single_qubit_noise:
+            scales.update({"1q": self.scale_1q, "reset": self.scale_reset, "meas": self.scale_measure,
+                           "idle": self.scale_idle, "idle_mr": self.scale_idle_mr})
+        return {kind: float(s) for kind, s in scales.items() if s > 0}

@@ -9,7 +9,7 @@ SEED = 163
 
 def run_calibration(num_epochs=40):
     env = RotatedSurfaceCodeEnv(
-        distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
+        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
         drift_frequency=0.0, drift_amplitude=0.0, seed=SEED,
     )
     rng = np.random.default_rng(SEED)
@@ -37,7 +37,7 @@ def run_calibration(num_epochs=40):
 def scan_frequency(f, num_epochs=30, return_history=False):
     """Steering advantage r and LER reduction (%) at one drift frequency, averaged over num_epochs."""
     env = RotatedSurfaceCodeEnv(
-        distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
+        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
         drift_frequency=f, drift_amplitude=0.6, seed=SEED,
     )
     agent = RLControlAgent(

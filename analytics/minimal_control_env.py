@@ -8,6 +8,10 @@ The offsets are e = p - p*, and each gate's error rate is
 
     eps = eps_0 + Omega * e^2        (clipped at 0.15)
 
+where Omega is the code's absolute curvature d eps / d e^2 of coupler i (its `curvature`,
+the error budget times the sensitivity under the code's default "additive" model), and e is
+in the code's tolerance units.
+
 Reading: the mean EDR over the detectors M_i that parameter i can flip,
 
     y = y_0 + C_ii e_i^2 + C_il e_l^2 + sigma * n,   sigma = sigma_1 / sqrt(S),   n ~ N(0, 1)
@@ -44,9 +48,9 @@ class MinimalControlEnv:
         param_index: int = 0,
         neighbor_index: Union[None, int, str] = None,  # None, a CX index, or "auto" (most shared detectors)
         base_error: float = 0.002,
-        sensitivity: float = 0.025,
+        sensitivity: float = 1.0,  # Omega in units of the error budget, see qec_env.py
         tau: Optional[float] = 1000.0,  # drift correlation time in slots (None = static)
-        drift_std: float = 0.5,  # stationary drift std s
+        drift_std: float = 1.75,  # stationary drift std s
         calib_shots: int = 200_000,
         seed: int = 163,
     ):
@@ -58,7 +62,7 @@ class MinimalControlEnv:
         # Full code with drift switched off: all parameters at their optimum except the modeled ones
         self.code = RotatedSurfaceCodeEnv(
             distance=distance, rounds=rounds, base_error=base_error, sensitivity=sensitivity,
-            drift_profile="sinusoidal", drift_amplitude=0.0, seed=seed,
+            drift_profile="sinusoidal", drift_amplitude=0.0, initial_offset=0.0, seed=seed,
         )
         n_cx = self.code.backend.num_cx_gates
         if not 0 <= param_index < n_cx:
@@ -79,8 +83,9 @@ class MinimalControlEnv:
         # Modeled couplers: index 0 = i, index 1 = neighbor l (if any)
         self.idx = [param_index] + ([neighbor_index] if neighbor_index is not None else [])
         self.n = len(self.idx)
-        self.omega = self.code.param_sensitivities[self.idx].astype(float)
         self.eps0 = self.code.param_base_errors[self.idx].astype(float)
+        # Absolute curvature d(eps)/d(e^2); a CX coupler's index is also its source id
+        self.omega = self.code.curvature[self.idx, self.idx].astype(float)
 
         self._setup_fast_sampler()
         self.set_drift(tau, drift_std)
