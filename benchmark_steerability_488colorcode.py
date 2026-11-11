@@ -36,7 +36,7 @@ def run_frequency_scan():
     freqs = [1/1000, 1/500, 1/250, 1/150, 1/100, 1/50, 1/25, 1/10]
     ler_red_pct, r_advantage = [], []
     for f in freqs:
-        env = ColorCodeEnv(
+        env = ColorCode488Env(
             distance=5, rounds=5, base_error=0.002, sensitivity=0.025,
             drift_frequency=f, drift_amplitude=0.6, seed=SEED,
         )
@@ -114,9 +114,9 @@ def plot_figure(h_cal, freqs, red_pct, r_vals):
     ax4.set_ylabel("Steering Advantage $r$")
     ax4.legend(loc="lower left")
     plt.tight_layout()
-    plt.savefig("colorcode_from_scratch_and_steerability.png", dpi=150)
+    plt.savefig("488colorcode_from_scratch_and_steerability.png", dpi=150)
     plt.close()
-    print("Saved 'denser_lowfreq_colorcode_from_scratch_and_steerability.png'")
+    print("Saved 'denser_lowfreq_488colorcode_from_scratch_and_steerability.png'")
 if __name__ == "__main__":
     h_cal = run_calibration(num_epochs=40)
     freqs, red_pct, r_vals = run_frequency_scan()
