@@ -396,7 +396,7 @@ class GeneratedCodeEnv(QECCodeEnv):
         sensitivity_spread: float = 0.4,
         params_per_gate: int = 1,
         include_single_qubit_noise: bool = True,
-        drift_profile: str = "sinusoidal",  # "sinusoidal" or "arma"
+        drift_profile: str = "sinusoidal",  # "sinusoidal", "arma" or "ar1"
         # Sinusoidal drift
         drift_frequency: float = 1.0 / 150.0,
         drift_amplitude: float = 2.0,
@@ -405,6 +405,9 @@ class GeneratedCodeEnv(QECCodeEnv):
         arma_white_fraction: float = 0.1,  # fraction of drift variance in the white floor
         arma_sigma: float = 2.0,
         arma_common_fraction: float = 0.08,
+        # AR(1) drift: log-uniform ranges of each parameter's correlation time (epochs) and std
+        ar1_tau_range: Tuple[float, float] = (1.0, 50.0),
+        ar1_sigma_range: Tuple[float, float] = (0.3, 1.5),
         max_epochs: int = 500,
         seed: int = 163,
         decoder: Union[None, str, Callable[[stim.Circuit], object]] = None,  # None = default_decoder
@@ -436,7 +439,8 @@ class GeneratedCodeEnv(QECCodeEnv):
             decoder=decoder if decoder is not None else self.default_decoder,
             noise_model=noise_model if noise_model is not None else NoiseModel(include_single_qubit_noise=include_single_qubit_noise),
             drift=make_drift(self.drift_profile, drift_frequency, drift_amplitude, arma_alpha,
-                             arma_white_fraction, arma_sigma, arma_common_fraction, max_epochs),
+                             arma_white_fraction, arma_sigma, arma_common_fraction, max_epochs,
+                             ar1_tau_range, ar1_sigma_range),
             base_error=base_error,
             sensitivity=sensitivity,
             sensitivity_spread=sensitivity_spread,
@@ -452,6 +456,8 @@ class GeneratedCodeEnv(QECCodeEnv):
                 pick(qubit_arma_sigma, arma_sigma),
                 pick(qubit_arma_common_fraction, arma_common_fraction),
                 max_epochs,
+                ar1_tau_range,
+                ar1_sigma_range,
             ),
             qubit_sensitivity=qubit_sensitivity,
             error_model=error_model,

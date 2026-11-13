@@ -14,19 +14,16 @@ in its mis-set e_i = p_i - p_opt_i(t):
 
 clipped to [base_s, max_error]. A block's `error_model` sets the unit:
 
-  - "relative" (the default): unit_s = base_s, so eps_s = base_s * (1 + sum ...): a mis-set
-    scales the source's own base rate, which is set per source kind by the SI1000 model
-    (see NoiseModel). With Omega = 1 a mis-set of 1 doubles the source's error rate and one
-    of 0.3 adds about 10%, whatever the kind. This is also the form of a parameter that
-    scales an existing error mechanism, e.g. a qubit frequency setting T1 through nearby
-    TLS defects.
-  - "additive": unit_s = error_budget * scale_s, a fixed error budget per
+  - "additive" (the default): unit_s = error_budget * scale_s, a fixed error budget per
     source kind. Parameters are then in tolerance units: a mis-set of 1 / sqrt(Omega_i)
     spends one budget, and with the default budget (the reference base rate) Omega = 1 makes
     a mis-set of 1 double the error and one of 0.3 add about 10%. The budget does not move
     with base_error, so lowering the floor doesn't make a mis-set any cheaper. This is the
     form of a coherent control error, eps = eps_0 + kappa e^2 (Wu et al., arXiv:2610.11477,
     App. D; Magann et al., arXiv:2512.07815).
+  - "relative": unit_s = base_s, so eps_s = base_s * (1 + sum ...). This is the form of a
+    parameter that scales an existing error mechanism, e.g. a qubit frequency setting T1
+    through nearby TLS defects.
 
 Each source's base rate is base_error times the source's `scale` (e.g. its SI1000
 multiplier) times a static spread U(0.8, 1.2). Each parameter's Omega_i is its owner's
@@ -177,7 +174,7 @@ class ControlEnv:
                                                for b in blocks]).astype(np.float32)
 
         # W[s, i] = weight of parameter i's owner on source s; unit[s, i] = error per unit W * Omega_i * e^2 on s
-        W = self.source_weights()
+        W = np.concatenate([np.repeat(b.weights, b.params_per_owner, axis=1) for b in blocks], axis=1)
         relative = np.concatenate([np.full(b.num_params, b.error_model == "relative") for b in blocks])
         budgets = (error_budget * scales).astype(np.float32)
         self._unit = np.where(relative[None, :], self.param_base_errors[:, None], budgets[:, None])
@@ -189,14 +186,10 @@ class ControlEnv:
         # The decoder assumes the static policy (params = 0) at t = 0
         backend.prepare_decoder(self.compute_physical_error_rates(np.zeros(self.num_params, dtype=np.float32), 0.0))
 
-    def source_weights(self) -> np.ndarray:
-        """W[s, i] = weight of parameter i's owner on source s, shape (num_sources x num_params)."""
-        return np.concatenate([np.repeat(b.weights, b.params_per_owner, axis=1) for b in self.blocks], axis=1)
-
     def scale_sensitivities(self, factors: np.ndarray):
         """Multiplies each Omega_i by factors[i], keeping the drawn sensitivities and drift realization."""
         self.param_sensitivities = (self.param_sensitivities * np.asarray(factors, dtype=np.float32)).astype(np.float32)
-        self._build_curvature(self.source_weights())
+        self._build_curvature(np.concatenate([np.repeat(b.weights, b.params_per_owner, axis=1) for b in self.blocks], axis=1))
         self.backend.prepare_decoder(self.compute_physical_error_rates(np.zeros(self.num_params, dtype=np.float32), 0.0))
 
     def _build_curvature(self, W: np.ndarray):

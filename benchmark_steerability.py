@@ -2,23 +2,19 @@ import sys
 from multiprocessing import Pool
 import matplotlib.pyplot as plt
 import numpy as np
-from rl_agent import RLControlAgent
+from run_experiment import make_agent
 from code_envs.surface_code_env import RotatedSurfaceCodeEnv
 SEED = 163
 
 
 def run_calibration(num_epochs=40):
     env = RotatedSurfaceCodeEnv(
-        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
+        distance=5, rounds=5, base_error=0.002,
         drift_frequency=0.0, drift_amplitude=0.0, seed=SEED,
     )
     rng = np.random.default_rng(SEED)
-    p_init = rng.uniform(-2.7, 2.7, size=env.num_params).astype(np.float32)
-    agent = RLControlAgent(
-        env.num_params, env.num_detectors, env.M,
-        lr_mu=0.08, lr_sigma=0.01, lr_baseline=0.15, entropy_reg=0.005,
-        sigma_init=0.40, sigma_min=0.08, sigma_max=0.50, use_adam=True, seed=SEED,
-    )
+    p_init = rng.uniform(-9.5, 9.5, size=env.num_params).astype(np.float32)  # tolerance units
+    agent = make_agent(env, SEED, lr_mu=0.28, lr_sigma=0.035, sigma_init=1.4, sigma_min=0.28, sigma_max=1.75)
     agent.mu = p_init.copy()
     history = {"epochs": [], "ler": [], "edr": [], "phys_err": []}
     for ep in range(num_epochs):
@@ -37,14 +33,10 @@ def run_calibration(num_epochs=40):
 def scan_frequency(f, num_epochs=30, return_history=False):
     """Steering advantage r and LER reduction (%) at one drift frequency, averaged over num_epochs."""
     env = RotatedSurfaceCodeEnv(
-        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
-        drift_frequency=f, drift_amplitude=0.6, seed=SEED,
+        distance=5, rounds=5, base_error=0.002,
+        drift_frequency=f, seed=SEED,
     )
-    agent = RLControlAgent(
-        env.num_params, env.num_detectors, env.M,
-        lr_mu=0.05, lr_sigma=0.01, lr_baseline=0.15, entropy_reg=0.005,
-        sigma_init=0.25, sigma_min=0.08, sigma_max=0.35, use_adam=True, seed=SEED,
-    )
+    agent = make_agent(env, SEED)
     fixed_policy = np.zeros(env.num_params, dtype=np.float32)
     ep_ler_f, ep_ler_r = [], []
     ep_edr_f, ep_edr_r, ep_edr_o = [], [], []

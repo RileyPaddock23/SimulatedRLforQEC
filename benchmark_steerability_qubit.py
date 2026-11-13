@@ -19,7 +19,7 @@ import os
 
 import numpy as np
 
-from rl_agent import RLControlAgent
+from run_experiment import AGENT_DEFAULTS, make_agent
 from code_envs.surface_code_env import RotatedSurfaceCodeEnv
 from code_envs.color_code_env import ColorCodeEnv
 
@@ -34,16 +34,12 @@ MODES = {
 OUT_DIR = "qubit_steerability_runs"
 
 
-def scan_point(code: str, mode: str, f: float, lr_mu: float = 0.05) -> dict:
+def scan_point(code: str, mode: str, f: float, lr_mu: float = AGENT_DEFAULTS["lr_mu"]) -> dict:
     env = CODES[code](
-        distance=5, rounds=5, base_error=0.002, sensitivity=12.5,
-        drift_frequency=f, drift_amplitude=0.6, seed=SEED, **MODES[mode],
+        distance=5, rounds=5, base_error=0.002,
+        drift_frequency=f, seed=SEED, **MODES[mode],
     )
-    agent = RLControlAgent(
-        env.num_params, env.num_detectors, env.M,
-        lr_mu=lr_mu, lr_sigma=0.01, lr_baseline=0.15, entropy_reg=0.005,
-        sigma_init=0.25, sigma_min=0.08, sigma_max=0.35, use_adam=True, seed=SEED,
-    )
+    agent = make_agent(env, SEED, lr_mu=lr_mu)
     fixed_policy = np.zeros(env.num_params, dtype=np.float32)
     ep_ler_f, ep_ler_r, ep_ler_o = [], [], []
     ep_edr_f, ep_edr_r, ep_edr_o = [], [], []
@@ -64,7 +60,7 @@ def scan_point(code: str, mode: str, f: float, lr_mu: float = 0.05) -> dict:
     mean_lf, mean_lr = np.mean(ep_ler_f), np.mean(ep_ler_r)
     mean_ef, mean_er, mean_eo = np.mean(ep_edr_f), np.mean(ep_edr_r), np.mean(ep_edr_o)
     return {
-        "code": code, "mode": mode, "freq": f, "lr_mu": lr_mu,
+        "code": code, "mode": mode, "freq": f, "lr_mu": lr_mu, "amplitude": env.drift.amplitude,
         "num_gate_params": env.num_gate_params, "num_qubit_params": env.num_qubit_params,
         "ler_red_pct": float((mean_lf - mean_lr) / (mean_lf + 1e-6) * 100.0),
         "steering_r": float((mean_ef - mean_er) / (mean_ef - mean_eo + 1e-6)),
@@ -94,7 +90,7 @@ def plot_lr(out_dir: str, path: str):
             axes[0, j].semilogx(f, [r["steering_r"] for r in pts], color=c, marker="o", ms=5, lw=2, label=f"lr$_\mu$ = {lr:g}")
             axes[1, j].semilogx(f, [r["ler_red_pct"] for r in pts], color=c, marker="o", ms=5, lw=2, label=f"lr$_\mu$ = {lr:g}")
             # Adam slew-rate limit: max step ~ lr_mu per update vs. max drift speed 2 pi f A per update
-            f_slew = lr / (2 * np.pi * 0.6)
+            f_slew = lr / (2 * np.pi * pts[0].get("amplitude", 0.6))
             if min(f) <= f_slew <= max(f):
                 for ax in axes[:, j]:
                     ax.axvline(f_slew, color=c, ls=":", lw=1.4)
@@ -159,7 +155,7 @@ if __name__ == "__main__":
     p.add_argument("--mode", choices=sorted(MODES), default="qubit")
     p.add_argument("--freq-index", type=int, default=None, help="run one frequency from FREQS (default: all)")
     p.add_argument("--freq", type=float, default=None, help="run one arbitrary frequency instead")
-    p.add_argument("--lr-mu", type=float, default=0.05)
+    p.add_argument("--lr-mu", type=float, default=AGENT_DEFAULTS["lr_mu"])
     p.add_argument("--out-dir", default=OUT_DIR)
     p.add_argument("--plot-path", default="qubit_steerability_comparison.png")
     args = p.parse_args()
@@ -176,7 +172,7 @@ if __name__ == "__main__":
             points = [(str(i), FREQS[i]) for i in (range(len(FREQS)) if args.freq_index is None else [args.freq_index])]
         for tag, freq in points:
             r = scan_point(args.code, args.mode, freq, lr_mu=args.lr_mu)
-            lr_tag = "" if args.lr_mu == 0.05 else f"_lr{args.lr_mu:g}"
+            lr_tag = "" if args.lr_mu == AGENT_DEFAULTS["lr_mu"] else f"_lr{args.lr_mu:g}"
             with open(os.path.join(args.out_dir, f"{args.code}_{args.mode}{lr_tag}_f{tag}.json"), "w") as fh:
                 json.dump(r, fh, indent=2)
             print(f"{args.code:7s} {args.mode:5s} lr {args.lr_mu:<5g} Freq {r['freq']:7.4f} | LER Red: {r['ler_red_pct']:+6.1f}% | Steering r: {r['steering_r']:5.2f}")

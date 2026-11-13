@@ -133,6 +133,7 @@ class RLControlAgent:
         # grad_mu = E[ A_i * (p_i - mu_i) / sigma_i^2 ]
         diff = actions - self.mu  # Shape (B, P)
         grad_mu = np.mean(masked_advantage * diff / (self.sigma ** 2), axis=0)
+        self.last_grad_mu = grad_mu.copy()  # before clipping, for diagnostics
 
         # grad_sigma = E[ A_i * ((p_i - mu_i)^2 - sigma_i^2) / sigma_i^3 ] + entropy_reg / sigma_i
         grad_sigma = (

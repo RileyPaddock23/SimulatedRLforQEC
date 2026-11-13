@@ -131,15 +131,64 @@ class ArmaDrift:
         return p_opt
 
 
+class Ar1Drift:
+    """
+    Independent AR(1) (Ornstein-Uhlenbeck) drift per parameter, each with its own
+    correlation time tau_i (epochs) and stationary std sigma_i, both drawn log-uniformly
+    from the given ranges:
+
+        x(t + dt) = phi_i x(t) + sigma_i sqrt(1 - phi_i^2) n,   phi_i = exp(-dt / tau_i)
+
+    Each trajectory starts from its stationary distribution. It is sampled every
+    dt = min(tau) / steps_per_tau epochs and linearly interpolated in between. The drawn
+    taus and sigmas are attached to the returned function as `p_opt.taus`, `p_opt.sigmas`.
+    """
+
+    def __init__(self, tau_range: Tuple[float, float] = (1.0, 50.0), sigma_range: Tuple[float, float] = (0.3, 1.5),
+                 max_epochs: int = 500, steps_per_tau: int = 20):
+        self.tau_range = tuple(float(v) for v in tau_range)
+        self.sigma_range = tuple(float(v) for v in sigma_range)
+        self.max_epochs = max(1, int(max_epochs))
+        self.steps_per_tau = max(2, int(steps_per_tau))
+
+    def build(self, num_params: int, params_per_owner: int, rng: np.random.Generator) -> Callable[[float], np.ndarray]:
+        loguniform = lambda lo, hi: np.exp(rng.uniform(np.log(lo), np.log(hi), size=num_params))
+        taus = loguniform(*self.tau_range)
+        sigmas = loguniform(*self.sigma_range)
+        dt = float(taus.min()) / self.steps_per_tau if num_params else 1.0
+        n = int(np.ceil(self.max_epochs / dt)) + 2
+        phi = np.exp(-dt / taus)
+        x = np.empty((n, num_params))
+        x[0] = sigmas * rng.standard_normal(num_params)
+        kicks = sigmas * np.sqrt(1.0 - phi ** 2) * rng.standard_normal((n - 1, num_params))
+        for k in range(1, n):
+            x[k] = phi * x[k - 1] + kicks[k - 1]
+        x = x.astype(np.float32)
+
+        def p_opt(t: float) -> np.ndarray:
+            u = min(max(float(t), 0.0) / dt, n - 1.0)
+            i = min(int(u), n - 2)
+            f = u - i
+            return (1.0 - f) * x[i] + f * x[i + 1]
+        p_opt.taus, p_opt.sigmas = taus, sigmas
+        return p_opt
+
+
 def make_drift(profile: str, frequency: float, amplitude: float, alpha: float, white_fraction: float,
-               sigma: float, common_fraction: float, max_epochs: int):
-    """Builds a drift model from flat settings: "sinusoidal" uses frequency/amplitude, "arma" the rest."""
+               sigma: float, common_fraction: float, max_epochs: int,
+               ar1_tau_range: Tuple[float, float] = (1.0, 50.0), ar1_sigma_range: Tuple[float, float] = (0.3, 1.5)):
+    """
+    Builds a drift model from flat settings: "sinusoidal" uses frequency/amplitude, "arma"
+    alpha/white_fraction/sigma/common_fraction, "ar1" the AR(1) tau and sigma ranges.
+    """
     if profile == "sinusoidal":
         return SinusoidalDrift(frequency=frequency, amplitude=amplitude)
     if profile == "arma":
         return ArmaDrift(alpha=alpha, white_fraction=white_fraction, sigma=sigma,
                          common_fraction=common_fraction, max_epochs=max_epochs)
-    raise ValueError(f"Unknown drift profile '{profile}' (use 'sinusoidal' or 'arma')")
+    if profile == "ar1":
+        return Ar1Drift(tau_range=ar1_tau_range, sigma_range=ar1_sigma_range, max_epochs=max_epochs)
+    raise ValueError(f"Unknown drift profile '{profile}' (use 'sinusoidal', 'arma' or 'ar1')")
 
 
 # ---------------------------------------------------------------------- noise model

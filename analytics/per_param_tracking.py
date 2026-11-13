@@ -14,12 +14,21 @@ and by parameter class: CX coupler vs. single-qubit (1q) vs. qubit parameter, an
 boundary (a qubit is on the boundary if it has fewer couplers than the most-connected qubit
 of its role, data or measure; a coupler is on the boundary if either of its qubits is).
 
+Each parameter also gets the two diagnostics of Wu et al. (arXiv:2610.11477, Table I),
+computed from the agent's trajectory by `drift_diagnostics` in run_experiment.py:
+
+  - detectability D_i = (drift of p_opt_i per reference epoch) / (precision with which an
+    epoch of the agent's own gradient estimates locates p_opt_i): below 1 it chases noise
+  - budget fraction R_i = Omega_i <(mu_i - p_opt_i)^2>, the error budgets its tracking error
+    spends, plus R_probe_i = Omega_i <sigma_i^2> for its exploration
+
 Each code is run gate-only (params_per_qubit = 0) and with qubit parameters (= 1). The
 geometry (M) is fixed across seeds while the sensitivities and drift realizations are
 redrawn, so averaging over seeds isolates the effect of the geometry.
 
     python -m analytics.per_param_tracking --seeds 4
     python -m analytics.per_param_tracking --drift-frequency 0.02 --out figures/per_param/per_param_tracking_f0.02.json
+    python -m analytics.per_param_tracking --error-model relative --out figures/per_param/per_param_tracking_f0.0067_si1000.json
 """
 
 import argparse
@@ -89,20 +98,23 @@ def parameter_features(env) -> dict:
 def make_env(code: str, params_per_qubit: int, seed: int, args):
     return CODES[code](
         distance=args.distance, rounds=args.rounds, params_per_qubit=params_per_qubit,
-        drift_profile=args.drift, drift_frequency=args.drift_frequency,
+        drift_profile=args.drift, drift_frequency=args.drift_frequency, error_model=args.error_model,
         max_epochs=int(np.ceil(args.total_shots / SHOTS_PER_EPOCH_REF)) + 1, seed=seed,
     )
 
 
-def run_one(job) -> list:
-    """One trial; returns the per-parameter tracking RMS."""
+PER_PARAM_KEYS = ("tracking_rms", "detectability", "budget_fraction", "budget_fraction_probe")
+
+
+def run_one(job) -> dict:
+    """One trial; returns the per-parameter diagnostics (see PER_PARAM_KEYS)."""
     code, params_per_qubit, seed, args = job
     env = make_env(code, params_per_qubit, seed, args)
     result = run_trial(env, make_agent(env, seed), total_shots=args.total_shots,
                        shots_per_candidate=args.shots_per_candidate, batch_size=args.batch_size,
                        eval_interval=args.total_shots, eval_shots=args.eval_shots, verbose=False)
     print(f"  {code:7s} ppq={params_per_qubit} seed={seed}: overall RMS {result['summary']['tracking_rms']:.3f}", flush=True)
-    return result["per_param_tracking_rms"]
+    return result["per_param"]
 
 
 def run_configs(args) -> list:
@@ -113,20 +125,21 @@ def run_configs(args) -> list:
     configs = [(code, ppq) for code in args.codes for ppq in (0, 1)]
     jobs = [(code, ppq, seed, args) for code, ppq in configs for seed in seeds]
     with Pool(min(args.workers, len(jobs))) as pool:
-        rms = pool.map(run_one, jobs)
+        per_param = pool.map(run_one, jobs)
 
     out = []
     for c, (code, ppq) in enumerate(configs):
         env = make_env(code, ppq, seeds[0], args)  # M (and so every feature) is the same for every seed
-        per_seed = rms[c * len(seeds):(c + 1) * len(seeds)]
+        per_seed = per_param[c * len(seeds):(c + 1) * len(seeds)]
         out.append({
             "code": code,
             "params_per_qubit": ppq,
             "num_detectors": env.num_detectors,
             "seeds": seeds,
             **parameter_features(env),
-            "tracking_rms": np.mean(per_seed, axis=0).tolist(),  # per parameter, averaged over seeds
-            "tracking_rms_seed_std": np.std(per_seed, axis=0).tolist(),
+            # per parameter, averaged over seeds
+            **{key: np.mean([r[key] for r in per_seed], axis=0).tolist() for key in PER_PARAM_KEYS},
+            "tracking_rms_seed_std": np.std([r["tracking_rms"] for r in per_seed], axis=0).tolist(),
         })
     return out
 
@@ -134,13 +147,15 @@ def run_configs(args) -> list:
 def summarize(cfg: dict):
     """Prints per-class means and within-class Spearman correlations."""
     rms, ops, k, n = (np.array(cfg[key]) for key in ("tracking_rms", "noisy_ops", "column_weight", "neighbourhood"))
+    D, R, Rp = (np.array(cfg[key]) for key in ("detectability", "budget_fraction", "budget_fraction_probe"))
     kind, boundary = np.array(cfg["type"]), np.array(cfg["boundary"])
     se = np.median(np.array(cfg["tracking_rms_seed_std"]) / np.sqrt(len(cfg["seeds"])))
     print(f"\n{cfg['code']} code, params_per_qubit={cfg['params_per_qubit']} "
           f"({len(rms)} params, {cfg['num_detectors']} detectors, overall RMS {np.sqrt(np.mean(rms ** 2)):.3f}, "
           f"median per-param s.e. {se:.3f})")
     print(f"  {'class':16s} {'count':>5s} {'RMS':>6s} {'ops':>5s} {'k':>6s} {'n':>6s} | "
-          f"{'rho(RMS,ops)':>12s} {'rho(RMS,k)':>10s} {'rho(RMS,n)':>10s}")
+          f"{'rho(RMS,ops)':>12s} {'rho(RMS,k)':>10s} {'rho(RMS,n)':>10s} | "
+          f"{'D med':>5s} {'D<1':>4s} {'R':>6s} {'R_probe':>7s}")
     for t in (*TYPES, None):
         for label, sel in (("all", kind == t), ("bulk", (kind == t) & ~boundary), ("boundary", (kind == t) & boundary)):
             if t is None:  # pooled over every parameter
@@ -149,7 +164,8 @@ def summarize(cfg: dict):
                 continue
             corr = lambda x: spearmanr(x[sel], rms[sel]).statistic if sel.sum() > 3 and np.ptp(x[sel]) > 0 else np.nan
             print(f"  {(t or '') + ' ' + label:16s} {sel.sum():5d} {rms[sel].mean():6.3f} {ops[sel].mean():5.1f} "
-                  f"{k[sel].mean():6.1f} {n[sel].mean():6.1f} | {corr(ops):12.2f} {corr(k):10.2f} {corr(n):10.2f}")
+                  f"{k[sel].mean():6.1f} {n[sel].mean():6.1f} | {corr(ops):12.2f} {corr(k):10.2f} {corr(n):10.2f} | "
+                  f"{np.median(D[sel]):5.2f} {np.mean(D[sel] < 1):4.0%} {R[sel].mean():6.3f} {Rp[sel].mean():7.3f}")
             if t is None:
                 break
 
@@ -159,14 +175,14 @@ def summarize(cfg: dict):
 COLORS = {"CX": "C0", "1q": "C1", "reset": "C3", "meas": "C4", "qubit": "C2"}
 
 
-def plot(configs, path: str):
+def plot(configs, path: str, error_model: str = "additive"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
     codes = sorted({c["code"] for c in configs}, key=list(CODES).index)
-    fig, axes = plt.subplots(1, len(codes), figsize=(6 * len(codes), 4.8), sharey=True, squeeze=False)
+    fig, axes = plt.subplots(2, len(codes), figsize=(6 * len(codes), 9.6), sharey="row", squeeze=False)
     rng = np.random.default_rng(0)
 
     # Per-parameter RMS vs. signal strength, in the env with gate and qubit parameters
@@ -188,11 +204,33 @@ def plot(configs, path: str):
         ax.grid(True, alpha=0.3)
     axes[0, 0].set_ylabel("Tracking RMS |mu - p_opt|")
 
+    # Wu et al. Table I view: budget spent vs. detectability, in the same env
+    for ax, code in zip(axes[1], codes):
+        full = next(c for c in configs if c["code"] == code and c["params_per_qubit"] > 0)
+        D, R, kind, boundary = (np.array(full[key]) for key in ("detectability", "budget_fraction", "type", "boundary"))
+        for t in TYPES:
+            for b, marker in ((False, "o"), (True, "^")):
+                sel = (kind == t) & (boundary == b)
+                ax.scatter(D[sel], R[sel], marker=marker, color=COLORS[t], alpha=0.8)
+        ax.axvline(1.0, color="gray", ls="--", lw=1.2)
+        ax.text(1.0, 1.0, " D = 1", transform=ax.get_xaxis_transform(), va="top", color="gray", fontsize=9)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("Detectability D = drift per epoch / precision per epoch")
+        ax.set_title(f"{code.capitalize()} code: median R = {np.median(R):.3f}, "
+                     f"mean probe R = {np.mean(full['budget_fraction_probe']):.3f}")
+        ax.grid(True, alpha=0.3, which="both")
+    axes[1, 0].set_ylabel("Budget fraction R = Omega <(mu - p_opt)^2>\n"
+                          + ("(fractional increase of the base rate)" if error_model == "relative"
+                             else "(gate params: error budgets; qubit params: fraction of base rate)"))
+
     handles = [Line2D([], [], ls="", marker="o", color=COLORS[t], label=f"{t} parameter") for t in TYPES]
     handles += [Line2D([], [], ls="", marker="o", color="gray", label="bulk"),
                 Line2D([], [], ls="", marker="^", color="gray", label="boundary")]
     axes[0, -1].legend(handles=handles, loc="upper right")
-    fig.suptitle("Per-parameter tracking error vs. signal strength")
+    model = ("relative, eps = p_b (1 + Omega e^2), on every parameter" if error_model == "relative"
+             else "additive gate parameters, relative qubit parameters")
+    fig.suptitle(f"Per-parameter tracking error vs. signal strength (top) and detectability (bottom); {model}")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     print(f"Figure saved to '{path}'")
@@ -206,6 +244,8 @@ def main():
     p.add_argument("--drift", choices=["sinusoidal", "arma"], default="sinusoidal",
                    help="sinusoidal moves every parameter in phase; arma drifts them independently")
     p.add_argument("--drift-frequency", type=float, default=1.0 / 150.0, help="sinusoidal drift frequency per epoch")
+    p.add_argument("--error-model", choices=["additive", "relative"], default="additive",
+                   help="gate parameters (qubit parameters are always relative); see code_envs/base_envs.py")
     p.add_argument("--seeds", type=int, default=4)
     p.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     p.add_argument("--total-shots", type=int, default=245_000)
@@ -224,7 +264,7 @@ def main():
     with open(args.out, "w") as f:
         json.dump({"config": vars(args), "runs": configs}, f, indent=2)
     print(f"\nResults saved to '{args.out}' ({time.time() - t0:.0f}s)")
-    plot(configs, args.out.replace(".json", ".png"))
+    plot(configs, args.out.replace(".json", ".png"), args.error_model)
 
 
 if __name__ == "__main__":
