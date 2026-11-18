@@ -174,7 +174,7 @@ class ControlEnv:
                                                for b in blocks]).astype(np.float32)
 
         # W[s, i] = weight of parameter i's owner on source s; unit[s, i] = error per unit W * Omega_i * e^2 on s
-        W = np.concatenate([np.repeat(b.weights, b.params_per_owner, axis=1) for b in blocks], axis=1)
+        W = self.source_weights()
         relative = np.concatenate([np.full(b.num_params, b.error_model == "relative") for b in blocks])
         budgets = (error_budget * scales).astype(np.float32)
         self._unit = np.where(relative[None, :], self.param_base_errors[:, None], budgets[:, None])
@@ -189,8 +189,25 @@ class ControlEnv:
     def scale_sensitivities(self, factors: np.ndarray):
         """Multiplies each Omega_i by factors[i], keeping the drawn sensitivities and drift realization."""
         self.param_sensitivities = (self.param_sensitivities * np.asarray(factors, dtype=np.float32)).astype(np.float32)
-        self._build_curvature(np.concatenate([np.repeat(b.weights, b.params_per_owner, axis=1) for b in self.blocks], axis=1))
+        self._build_curvature(self.source_weights())
         self.backend.prepare_decoder(self.compute_physical_error_rates(np.zeros(self.num_params, dtype=np.float32), 0.0))
+
+    def equalize_sensitivities(self, target: Optional[float] = None):
+        """
+        Rescales every Omega_i so that a unit mis-set of any parameter adds the same total
+        physical error, `target` summed over the sources it touches (default: one error
+        budget). Models a controller that has measured each parameter's sensitivity
+        beforehand and works in coordinates normalized by it: a unit step then costs the
+        same whichever parameter it moves. Drift amplitudes are then in these normalized
+        units too, i.e. every parameter's drift costs the same error when left uncorrected.
+        """
+        target = self.error_budget if target is None else float(target)
+        total = self.curvature.sum(axis=0)
+        self.scale_sensitivities(np.where(total > 0, target / np.maximum(total, 1e-30), 1.0))
+
+    def source_weights(self) -> np.ndarray:
+        """W[s, i]: weight of parameter i's owner on source s, shape (sources, params)."""
+        return np.concatenate([np.repeat(b.weights, b.params_per_owner, axis=1) for b in self.blocks], axis=1)
 
     def _build_curvature(self, W: np.ndarray):
         """curvature[s, i] = d eps_s / d e_i^2 = W[s, i] * Omega_i * unit[s, i], in absolute error per unit squared mis-set."""

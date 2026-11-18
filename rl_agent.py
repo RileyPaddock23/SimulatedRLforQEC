@@ -87,24 +87,30 @@ class RLControlAgent:
         Returns:
             np.ndarray of shape (batch_size, num_params)
         """
+        return self.mu + self.sigma * self.sample_directions(batch_size, antithetic)
+
+    def sample_directions(self, batch_size: int, antithetic: bool = True) -> np.ndarray:
+        """
+        Standard-normal perturbation directions z, shape (B, P), zero outside steer_mask; a
+        candidate is mu + sigma * z. With antithetic, row 2k + 1 is -row 2k. Drawing z
+        separately lets a controller apply it around whatever mean is loaded when the
+        candidate runs (see `update`'s centers).
+        """
         if antithetic:
             half_batch = (batch_size + 1) // 2
-            noise = self.rng.normal(0.0, 1.0, size=(half_batch, self.num_params)).astype(np.float32)
-            delta = noise * self.sigma * self.steer_mask
-            samples = np.empty((2 * half_batch, self.num_params), dtype=np.float32)
-            samples[0::2] = self.mu + delta
-            samples[1::2] = self.mu - delta
-            samples = samples[:batch_size]
-        else:
-            noise = self.rng.normal(0.0, 1.0, size=(batch_size, self.num_params)).astype(np.float32)
-            samples = self.mu + noise * self.sigma * self.steer_mask
-
-        return samples
+            noise = self.rng.normal(0.0, 1.0, size=(half_batch, self.num_params)).astype(np.float32) * self.steer_mask
+            z = np.empty((2 * half_batch, self.num_params), dtype=np.float32)
+            z[0::2] = noise
+            z[1::2] = -noise
+            return z[:batch_size]
+        return self.rng.normal(0.0, 1.0, size=(batch_size, self.num_params)).astype(np.float32) * self.steer_mask
 
     def update(
         self,
         actions: np.ndarray,
         observations: np.ndarray,
+        centers: Optional[np.ndarray] = None,
+        sigmas: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         Performs masked policy gradient update given a batch of actions and observations.
@@ -112,6 +118,10 @@ class RLControlAgent:
         Args:
             actions: sampled parameter vectors, shape (B, P)
             observations: empirical detector error rates o_k in [0, 1]^O, shape (B, O)
+            centers, sigmas: the mean and width each action was drawn with, shape (B, P)
+                (default: the current mu and sigma). A streaming controller whose update
+                lands while candidates are still running draws some candidates around a
+                mean that is no longer the current one.
 
         Returns:
             dict of training diagnostics (mean_reward, norm_grad_mu, mean_sigma, etc.)
@@ -131,13 +141,14 @@ class RLControlAgent:
 
         # 4. Analytic policy gradients for factorized Gaussian:
         # grad_mu = E[ A_i * (p_i - mu_i) / sigma_i^2 ]
-        diff = actions - self.mu  # Shape (B, P)
-        grad_mu = np.mean(masked_advantage * diff / (self.sigma ** 2), axis=0)
+        sig = self.sigma if sigmas is None else sigmas
+        diff = actions - (self.mu if centers is None else centers)  # Shape (B, P)
+        grad_mu = np.mean(masked_advantage * diff / (sig ** 2), axis=0)
         self.last_grad_mu = grad_mu.copy()  # before clipping, for diagnostics
 
         # grad_sigma = E[ A_i * ((p_i - mu_i)^2 - sigma_i^2) / sigma_i^3 ] + entropy_reg / sigma_i
         grad_sigma = (
-            np.mean(masked_advantage * (diff ** 2 - self.sigma ** 2) / (self.sigma ** 3), axis=0)
+            np.mean(masked_advantage * (diff ** 2 - sig ** 2) / (sig ** 3), axis=0)
             + (self.entropy_reg / self.sigma)
         )
 
@@ -194,3 +205,31 @@ class RLControlAgent:
             "mu": self.mu.copy(),
             "sigma": self.sigma.copy(),
         }
+
+
+class AdamProbeSizer:
+    """
+    Sets each parameter's probe width from the gradient signal-to-noise in Adam's moments,
+    rho_i = m_hat_i^2 / v_hat_i (bias-corrected). Pure noise gives rho ~ (1 - beta1) / (1 + beta1)
+    (~0.05); a consistent gradient (the optimum has moved away) gives rho -> 1. The width
+    interpolates linearly between those:
+
+        sigma_i = sigma_min + (sigma_max - sigma_min) * clip((rho_i - rho_noise) / (1 - rho_noise), 0, 1)
+
+    Replaces the agent's own sigma step: call it after every update (e.g. as the `probe_sizer`
+    of run_streaming_experiment.run_streaming_trial). Needs an agent with use_adam=True.
+    """
+
+    def __init__(self, sigma_min: float = 0.1, sigma_max: float = 0.5):
+        self.sigma_min = float(sigma_min)
+        self.sigma_max = float(sigma_max)
+
+    def __call__(self, agent: RLControlAgent):
+        if agent.step_count == 0:
+            return
+        m = agent.m_mu / (1 - agent.beta1 ** agent.step_count)
+        v = agent.v_mu / (1 - agent.beta2 ** agent.step_count)
+        rho = m ** 2 / (v + 1e-12)
+        rho_noise = (1 - agent.beta1) / (1 + agent.beta1)
+        x = np.clip((rho - rho_noise) / (1 - rho_noise), 0.0, 1.0)
+        agent.sigma = (self.sigma_min + (self.sigma_max - self.sigma_min) * x).astype(np.float32)

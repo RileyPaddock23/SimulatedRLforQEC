@@ -1,43 +1,65 @@
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
+import scipy.signal as si
 import stim
+
+
+@lru_cache(maxsize=64)
+def pink_arma_filter(alpha: float, wl: float = 0.001 * np.pi, wh: float = 0.999 * np.pi) -> Tuple[np.ndarray, int]:
+    """
+    ARMA filter whose output PSD follows 1/f^alpha between the normalized angular frequencies
+    wl and wh (rad/sample), after S. Plaszczynski, Fluctuation and Noise Letters 7, R1 (2007).
+    Poles and zeros alternate on a log-spaced grid (~2.5 per decade); below wl the spectrum is
+    white, above wh it falls as 1/f^2. Mapped to discrete time with the bilinear transform.
+
+    Returns (sos, burn_in): second-order sections scaled so that unit-variance white input
+    gives unit-variance stationary output, and the number of samples to discard so the filter
+    state reaches stationarity (10 time constants of the slowest pole).
+    """
+    if not 0.0 < alpha <= 2.0:
+        raise ValueError(f"alpha must be in (0, 2], got {alpha}")
+    lw, hw = np.log10(wl), np.log10(wh)
+    nf = int(np.ceil(2.5 * (hw - lw)))
+    delp = (hw - lw) / nf
+    log_p = lw + 0.5 * (1.0 - alpha / 2.0) * delp + np.arange(nf) * delp
+    log_z = log_p + alpha / 2.0 * delp
+    p, z = 10.0 ** log_p, 10.0 ** log_z
+    sos = si.zpk2sos((1.0 - z) / (1.0 + z), (1.0 - p) / (1.0 + p), 1.0)
+
+    # Exact stationary variance from the impulse response (sum of h^2).
+    slowest = float(np.max((1.0 - p) / (1.0 + p)))
+    tau = 1.0 / (1.0 - slowest)
+    impulse = np.zeros(int(40 * tau) + 1)
+    impulse[0] = 1.0
+    h = si.sosfilt(sos, impulse)
+    sos = sos.copy()
+    sos[0, :3] /= np.sqrt(np.sum(h ** 2))
+    return sos, int(np.ceil(10 * tau))
 
 
 def generate_fractional_noise(
     n_steps: int,
     alpha: float,
     sigma: float = 0.6,
-    n_taps: int = 256,
     rng: Optional[np.random.Generator] = None,
+    wl: float = 0.001 * np.pi,
+    wh: float = 0.999 * np.pi,
 ) -> np.ndarray:
     """
-    Generates 1/f^alpha fractional noise with unit variance scaled by sigma.
-    For alpha <= 0.01, generates pure white noise.
+    1/f^alpha noise (alpha in (0, 2]) from the Plaszczynski ARMA filter (see pink_arma_filter),
+    with stationary std sigma. sigma is the ensemble std: individual trajectories are not
+    re-standardized, so a finite window of long-memory noise shows its natural spread in
+    sample std (typically below sigma). For alpha <= 0.01, generates pure white noise.
     """
     if rng is None:
         rng = np.random.default_rng(163)
     if alpha <= 0.01:
         return rng.normal(0.0, sigma, size=n_steps).astype(np.float32)
-
-    d = float(alpha) / 2.0
-    b = np.empty(n_taps, dtype=np.float64)
-    b[0] = 1.0
-    for k in range(1, n_taps):
-        b[k] = b[k - 1] * (k - 1 + d) / k
-    norm = np.sqrt(np.sum(b ** 2))
-    if norm > 1e-12:
-        b /= norm
-
-    burn_in = min(n_taps, 500)
-    total = n_steps + burn_in
-    x = rng.standard_normal(total + len(b))
-    y = np.convolve(x, b, mode="full")[len(b) - 1: len(b) - 1 + total]
-    traj = y[burn_in:burn_in + n_steps]
-    std_val = float(np.std(traj))
-    if std_val > 1e-12:
-        traj = (traj - float(np.mean(traj))) / std_val
-    return (float(sigma) * traj).astype(np.float32)
+    sos, burn_in = pink_arma_filter(float(alpha), float(wl), float(wh))
+    y = si.sosfilt(sos, rng.standard_normal(n_steps + burn_in))[burn_in:]
+    return (float(sigma) * y).astype(np.float32)
 
 
 def generate_power_law_noise(
@@ -46,21 +68,19 @@ def generate_power_law_noise(
     white_fraction: float = 0.1,
     sigma: float = 0.60,
     rng: Optional[np.random.Generator] = None,
+    wl: float = 0.001 * np.pi,
+    wh: float = 0.999 * np.pi,
 ) -> np.ndarray:
     """
-    Generates 1/f^alpha noise on top of a white noise floor.
+    Generates 1/f^alpha noise on top of a white noise floor, with stationary (ensemble) std sigma.
     `white_fraction` is the fraction of the total variance carried by the white floor.
     """
     if rng is None:
         rng = np.random.default_rng(163)
     w = float(np.clip(white_fraction, 0.0, 1.0))
-    colored = generate_fractional_noise(n_steps, alpha=alpha, sigma=1.0, rng=rng)
+    colored = generate_fractional_noise(n_steps, alpha=alpha, sigma=1.0, rng=rng, wl=wl, wh=wh)
     white = rng.normal(0.0, 1.0, size=n_steps).astype(np.float32)
-    combined = np.sqrt(1.0 - w) * colored + np.sqrt(w) * white
-    std_val = float(np.std(combined))
-    if std_val > 1e-12:
-        combined = (combined - float(np.mean(combined))) / std_val
-    return (float(sigma) * combined).astype(np.float32)
+    return (float(sigma) * (np.sqrt(1.0 - w) * colored + np.sqrt(w) * white)).astype(np.float32)
 
 
 # ---------------------------------------------------------------------- drift models
@@ -69,19 +89,24 @@ def generate_power_law_noise(
 # a gate, a qubit, ...), so parameter m of owner g is index g * params_per_owner + m.
 
 class SinusoidalDrift:
-    """p_opt(t) = A * sin(2 pi f_m t), with f_m = f * (1 + 0.5 m) for the m-th parameter of each owner."""
+    """
+    p_opt(t) = A * sin(2 pi f_m t + phi), with f_m = f * (1 + 0.5 m) for the m-th parameter of
+    each owner. phi = 0 for every parameter (all in phase, the default), or with random_phase
+    drawn U(0, 2 pi) per parameter, so the parameters don't move together and every stretch
+    of time sees the same mix of drift speeds.
+    """
 
-    def __init__(self, frequency: float = 1.0 / 150.0, amplitude: float = 2.0):
+    def __init__(self, frequency: float = 1.0 / 150.0, amplitude: float = 2.0, random_phase: bool = False):
         self.frequency = frequency
         self.amplitude = amplitude
+        self.random_phase = random_phase
 
     def build(self, num_params: int, params_per_owner: int, rng: np.random.Generator) -> Callable[[float], np.ndarray]:
+        phase = rng.uniform(0.0, 2.0 * np.pi, size=num_params) if self.random_phase else np.zeros(num_params)
+        freq = self.frequency * (1.0 + 0.5 * (np.arange(num_params) % max(1, params_per_owner)))
+
         def p_opt(t: float) -> np.ndarray:
-            out = np.zeros(num_params, dtype=np.float32)
-            for m in range(params_per_owner):
-                freq_m = self.frequency * (1.0 + 0.5 * m)
-                out[m::params_per_owner] = self.amplitude * np.sin(2.0 * np.pi * freq_m * t)
-            return out
+            return (self.amplitude * np.sin(2.0 * np.pi * freq * t + phase)).astype(np.float32)
         return p_opt
 
 
@@ -93,7 +118,7 @@ class ArmaDrift:
 
     def __init__(
         self,
-        alpha: float = 0.67,  # 0 = white, 1 = flicker, 2 = random walk
+        alpha: float = 0.67,  # 0 = white, 1 = flicker, 2 = random walk (max 2)
         white_fraction: float = 0.1,  # fraction of drift variance in the white floor
         sigma: float = 2.0,
         common_fraction: float = 0.08,

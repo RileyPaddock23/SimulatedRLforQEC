@@ -9,9 +9,13 @@ An RL agent keeps a rotated surface code's control parameters calibrated while t
 | `qec_env.py` | `QECCodeEnv`: generic Stim environment for any QEC circuit, with pluggable noise placement, drift (sinusoidal or 1/f^α) and decoder. |
 | `surface_code_env.py` | `RotatedSurfaceCodeEnv`: rotated surface code on top of `QECCodeEnv`, decoded with PyMatching. |
 | `color_code_env.py` | `ColorCodeEnv`: color code on top of `QECCodeEnv`, decoded with BP+OSD (`stimbposd`). |
-| `rl_agent.py` | The PEPG agent (`RLControlAgent`). |
-| `run_experiment.py` | Command-line script (`--code surface` or `--code color`) that runs one closed-loop trial and prints Fixed, RL and Optimal side by side. |
-| `streaming/` | Single-shot, many-cycle version of the loop with update latency, and its experiments. See [streaming/README.md](streaming/README.md). |
+| `rl_agent.py` | The PEPG agent (`RLControlAgent`), and `AdamProbeSizer`, which sets probe widths from Adam's gradient signal-to-noise. |
+| `run_experiment.py` | Command-line script (`--code surface` or `--code color`) that runs one closed-loop trial and prints Fixed, RL and Optimal side by side. Also the shared setup every other script imports (`make_agent`, `build_env`, `run_trial`). |
+| `steerability.py` | Steerability scans: LER suppression and steering advantage as one drift property is swept (`--sweep freq`, `tau`, `alpha`, `amp-sin`, `amp-ar1`, `omega-sin`, `omega-ar1`), for both codes and gate / qubit / both parameters. Also static reference policies, learning-rate comparisons (`plot-lr`), single-run tracking (`track`) and example 1/f^α trajectories. Results in `runs/steerability/`, plots in `figures/steerability/`. |
+| `code_envs/streaming_env.py` | `StreamingQECEnv`: runs the whole experiment as one long memory shot, with drift moving the error rates while it runs. |
+| `run_streaming_experiment.py` | Streaming counterpart of `run_experiment.py`: the agent controls one long shot, decoded in real time, with each update landing some latency after its batch (`--schedule wait` holds the mean meanwhile, `interleave` keeps probing). `--report` runs the 1 s report preset with the RL-mean and reachable-Optimal shots; `--replot` redraws a saved run. |
+| `streaming_sweeps.py` | Sweeps of the full streaming controller. `latency`: in-situ steering advantage against update latency, interleave vs. wait. `jump`: recovery from TLS jumps under the hardware-realistic drift, for several probe-width rules and per-kind latency profiles. Plots in `figures/streaming/`. |
+| `streaming_schedule_sweep.py` | Decoder-free streaming loop scored on the exact excess error: batch size × cycles per candidate × drift period (`loop`), frozen-time gradient quality (`cosine`), and one schedule over several drift periods (`long`). Plots via `analytics/plot_schedule_sweep.py`. |
 | `hardware_drift/` | Hardware-realistic drift (slow random walk, stale calibration, TLS jumps) and the parameter choices behind it. See [hardware_drift/README.md](hardware_drift/README.md). |
 | `minimal_control_env.py` | Single-parameter control model and the analytic bounds. |
 | `run_minimal_experiment.py` | Checks the analytic results against the minimal model. |
@@ -131,7 +135,7 @@ The fixed LER of about 0.4 means the default drift (2 tolerances on every gate a
 
 ### Streaming and hardware-realistic drift
 
-Two folders build on the code above without changing it. [`streaming/`](streaming/README.md) runs the agent inside one long memory experiment, with updates landing some latency after each batch. [`hardware_drift/`](hardware_drift/README.md) defines slower, hardware-scale drift and documents the values chosen.
+`run_streaming_experiment.py` runs the agent inside one long memory experiment (`code_envs/streaming_env.py`), with each update landing `--latency-cycles` cycles after its batch; `streaming_sweeps.py` builds on it. [`hardware_drift/`](hardware_drift/README.md) defines slower, hardware-scale drift and documents the values chosen.
 
 ### Minimal single-parameter model
 

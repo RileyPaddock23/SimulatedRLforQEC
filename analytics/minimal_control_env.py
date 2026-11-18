@@ -46,7 +46,7 @@ class MinimalControlEnv:
         distance: int = 3,
         rounds: int = 3,
         param_index: int = 0,
-        neighbor_index: Union[None, int, str] = None,  # None, a CX index, or "auto" (most shared detectors)
+        neighbor_index: Union[None, int, str, list] = None,  # None, a CX index, a list of them, or "auto" (most shared detectors)
         base_error: float = 0.002,
         sensitivity: float = 1.0,  # Omega in units of the error budget, see qec_env.py
         tau: Optional[float] = 1000.0,  # drift correlation time in slots (None = static)
@@ -72,16 +72,19 @@ class MinimalControlEnv:
         self.num_detectors = self.code.num_detectors
 
         overlap = self.code.M[self.M_i, :n_cx].sum(axis=0)
+        overlap[param_index] = -1
         if neighbor_index == "auto":
-            overlap[param_index] = -1
             neighbor_index = int(np.argmax(overlap))
-        if neighbor_index is not None and (neighbor_index == param_index or overlap[neighbor_index] <= 0):
-            raise ValueError("neighbor_index must be a different CX coupler sharing detectors with M_i")
-        self.neighbor = neighbor_index
-        self.overlap = 0 if neighbor_index is None else int(overlap[neighbor_index])
+        # A list of neighbors is also accepted; "auto" and an int give a single one
+        neighbors = [] if neighbor_index is None else [int(n) for n in np.atleast_1d(neighbor_index)]
+        if any(n == param_index or overlap[n] <= 0 for n in neighbors):
+            raise ValueError("neighbor_index must be different CX coupler(s) sharing detectors with M_i")
+        self.neighbors = neighbors
+        self.neighbor = neighbors[0] if neighbors else None
+        self.overlap = int(overlap[neighbors[0]]) if neighbors else 0
 
-        # Modeled couplers: index 0 = i, index 1 = neighbor l (if any)
-        self.idx = [param_index] + ([neighbor_index] if neighbor_index is not None else [])
+        # Modeled couplers: index 0 = i, then the neighbors l (if any)
+        self.idx = [param_index] + neighbors
         self.n = len(self.idx)
         self.eps0 = self.code.param_base_errors[self.idx].astype(float)
         # Absolute curvature d(eps)/d(e^2); a CX coupler's index is also its source id
