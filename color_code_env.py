@@ -15,6 +15,8 @@ from qec_env import make_drift
 from typing import Callable, Optional, Union
 
 from color_code_gen_488 import square_octogon_color_code as cc488
+from qldpc import codes, circuits
+from qldpc.objects import Pauli
 
 
 class ColorCodeEnv(GeneratedCodeEnv):
@@ -23,7 +25,11 @@ class ColorCodeEnv(GeneratedCodeEnv):
     default_decoder = "bposd"  # T.S 10/14 swapped out pymatching for a stimbposd decoder
 
 class ColorCode488Env(QECCodeEnv):
-    """4.8.8 (square-octogon) color code with continuous hardware drift and local factor-graph masking."""
+    """
+    4.8.8 (square-octogon) color code with continuous hardware drift and local factor-graph masking.
+    Limited to distance 5 (and thus 5 rounds)
+    
+    """
     def __init__(
             self,
             distance: int = 5,
@@ -63,10 +69,20 @@ class ColorCode488Env(QECCodeEnv):
             self.drift_profile = str(drift_profile).lower()
             self.qubit_drift_profile = self.drift_profile if qubit_drift_profile is None else str(qubit_drift_profile).lower()
 
-            cc488_builder = cc488(5)
+            #cc488_builder = cc488(5)
+            H = [[1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], #1
+                [1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], #2
+                [0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0], #3
+                [0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0], #4
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0], #5
+                [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1], #6
+                [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0], #7
+                [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0], #8
+                ]
+            code = codes.CSSCode(code_x=H, code_z=H)
             
             super().__init__(
-                circuit=cc488_builder.build_circuit(), 
+                circuit=circuits.get_memory_experiment(code, num_rounds=5, basis=Pauli.Z), 
                 decoder="bposd",
                 noise_model=noise_model if noise_model is not None else NoiseModel(include_single_qubit_noise=include_single_qubit_noise),
                 drift=make_drift(self.drift_profile, drift_frequency, drift_amplitude, arma_alpha,

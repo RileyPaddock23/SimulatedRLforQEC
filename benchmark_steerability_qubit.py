@@ -22,10 +22,11 @@ import numpy as np
 from rl_agent import RLControlAgent
 from surface_code_env import RotatedSurfaceCodeEnv
 from color_code_env import ColorCodeEnv
+from color_code_env import ColorCode488Env
 
 SEED = 163
 FREQS = [1/1000, 1/500, 1/250, 1/150, 1/100, 1/50, 1/25, 1/10]
-CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
+CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv, "color488": ColorCode488Env}
 MODES = {
     "gate": dict(params_per_gate=1, params_per_qubit=0),
     "qubit": dict(params_per_gate=0, params_per_qubit=1),

@@ -114,7 +114,7 @@ def plot_figure(h_cal, freqs, red_pct, r_vals):
     ax4.set_ylabel("Steering Advantage $r$")
     ax4.legend(loc="lower left")
     plt.tight_layout()
-    plt.savefig("colorcode_from_scratch_and_steerability.png", dpi=150)
+    plt.savefig("denser_lowfreq_colorcode_from_scratch_and_steerability.png", dpi=150)
     plt.close()
     print("Saved 'denser_lowfreq_colorcode_from_scratch_and_steerability.png'")
 if __name__ == "__main__":

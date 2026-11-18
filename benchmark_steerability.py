@@ -114,9 +114,9 @@ def plot_figure(h_cal, freqs, red_pct, r_vals):
     ax4.set_ylabel("Steering Advantage $r$")
     ax4.legend(loc="lower left")
     plt.tight_layout()
-    plt.savefig("from_scratch_and_steerability.png", dpi=150)
+    plt.savefig("surface_from_scratch_and_steerability.png", dpi=150)
     plt.close()
-    print("Saved 'from_scratch_and_steerability.png'")
+    print("Saved 'surface_from_scratch_and_steerability.png'")
 if __name__ == "__main__":
     h_cal = run_calibration(num_epochs=40)
     freqs, red_pct, r_vals = run_frequency_scan()

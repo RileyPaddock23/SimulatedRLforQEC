@@ -116,7 +116,7 @@ def plot_figure(h_cal, freqs, red_pct, r_vals):
     plt.tight_layout()
     plt.savefig("488colorcode_from_scratch_and_steerability.png", dpi=150)
     plt.close()
-    print("Saved 'denser_lowfreq_488colorcode_from_scratch_and_steerability.png'")
+    print("Saved '488colorcode_from_scratch_and_steerability.png'")
 if __name__ == "__main__":
     h_cal = run_calibration(num_epochs=40)
     freqs, red_pct, r_vals = run_frequency_scan()
