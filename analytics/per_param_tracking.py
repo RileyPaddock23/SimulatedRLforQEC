@@ -43,6 +43,7 @@ from scipy.stats import spearmanr
 
 from code_envs.surface_code_env import RotatedSurfaceCodeEnv
 from code_envs.color_code_env import ColorCodeEnv
+from analytics.normalization import normalize, param_scales
 from run_experiment import SHOTS_PER_EPOCH_REF, make_agent, run_trial
 
 CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
@@ -110,11 +111,17 @@ def run_one(job) -> dict:
     """One trial; returns the per-parameter diagnostics (see PER_PARAM_KEYS)."""
     code, params_per_qubit, seed, args = job
     env = make_env(code, params_per_qubit, seed, args)
+    scales = np.ones(env.num_params, dtype=np.float32)
+    if getattr(args, "normalize", False):
+        env = normalize(env)
+        scales = env.scales
     result = run_trial(env, make_agent(env, seed), total_shots=args.total_shots,
                        shots_per_candidate=args.shots_per_candidate, batch_size=args.batch_size,
                        eval_interval=args.total_shots, eval_shots=args.eval_shots, verbose=False)
-    print(f"  {code:7s} ppq={params_per_qubit} seed={seed}: overall RMS {result['summary']['tracking_rms']:.3f}", flush=True)
-    return result["per_param"]
+    per_param = result["per_param"]
+    per_param["tracking_rms"] = (np.asarray(per_param["tracking_rms"]) * scales).tolist()  # back to tolerance units
+    print(f"  {code:7s} ppq={params_per_qubit} seed={seed}: overall RMS {np.sqrt(np.mean(np.square(per_param['tracking_rms']))):.3f}", flush=True)
+    return per_param
 
 
 def run_configs(args) -> list:
@@ -140,6 +147,7 @@ def run_configs(args) -> list:
             # per parameter, averaged over seeds
             **{key: np.mean([r[key] for r in per_seed], axis=0).tolist() for key in PER_PARAM_KEYS},
             "tracking_rms_seed_std": np.std([r["tracking_rms"] for r in per_seed], axis=0).tolist(),
+            **({"param_scale": param_scales(env)[0].tolist()} if getattr(args, "normalize", False) else {}),
         })
     return out
 
@@ -252,6 +260,8 @@ def main():
     p.add_argument("--shots-per-candidate", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=20)
     p.add_argument("--eval-shots", type=int, default=400)
+    p.add_argument("--normalize", action="store_true",
+                   help="run the agent in detector-sensitivity normalized coordinates (analytics/normalization.py)")
     p.add_argument("--out", type=str, default="figures/per_param/per_param_tracking.json")
     args = p.parse_args()
 

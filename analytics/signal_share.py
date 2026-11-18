@@ -80,19 +80,24 @@ def calibrate(job) -> dict:
     code, seed, args = job
     env = CODES[code](distance=args.distance, rounds=args.rounds, params_per_qubit=1,
                       drift_amplitude=0.0, initial_offset=args.offset, error_model="relative", seed=seed)
+    scales = np.ones(env.num_params, dtype=np.float32)
+    if getattr(args, "normalize", False):
+        from analytics.normalization import normalize
+        env = normalize(env)
+        scales = env.scales
     agent = make_agent(env, seed)
     p_opt = env.get_drift_opt(0.0)
     update_shots = args.batch_size * args.shots_per_candidate
-    shots, err = [0], [np.abs(agent.mu - p_opt)]
+    shots, err = [0], [np.abs(agent.mu - p_opt) * scales]  # tolerance units
     for u in range(args.total_shots // update_shots):
         cands = agent.sample_policies(batch_size=args.batch_size, antithetic=True)
         obs = np.array([env.evaluate_policy(c, t=0.0, shots=args.shots_per_candidate)["edr_vector"] for c in cands])
         agent.update(cands, obs)
         if (u + 1) % args.checkpoint_every == 0:
             shots.append((u + 1) * update_shots)
-            err.append(np.abs(agent.mu - p_opt))
+            err.append(np.abs(agent.mu - p_opt) * scales)
     print(f"  {code:7s} seed={seed}: RMS {np.sqrt(np.mean(err[0] ** 2)):.2f} -> {np.sqrt(np.mean(err[-1] ** 2)):.3f}", flush=True)
-    return {"shots": shots, "abs_err": np.array(err).tolist(), "offset": (-p_opt).tolist()}
+    return {"shots": shots, "abs_err": np.array(err).tolist(), "offset": (-p_opt * scales).tolist()}
 
 
 def shots_to_fraction(shots: np.ndarray, err: np.ndarray, start: np.ndarray, frac: float) -> np.ndarray:
@@ -110,7 +115,7 @@ def run(args) -> dict:
     with Pool(min(args.workers, len(jobs))) as pool:
         runs = pool.map(calibrate, jobs)
 
-    with open(TRACKING_JSON) as f:
+    with open(args.tracking_json) as f:
         tracking = json.load(f)
     targs = types.SimpleNamespace(**tracking["config"])
 
@@ -275,6 +280,10 @@ def main():
     p.add_argument("--shots-per-candidate", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=20)
     p.add_argument("--checkpoint-every", type=int, default=5, help="updates between checkpoints")
+    p.add_argument("--normalize", action="store_true",
+                   help="run the calibration agent in detector-sensitivity normalized coordinates (analytics/normalization.py)")
+    p.add_argument("--tracking-json", type=str, default=TRACKING_JSON,
+                   help="per_param_tracking results to read the drift tracking RMS from (use a --normalize run with --normalize)")
     p.add_argument("--out", type=str, default="runs/per_param/signal_share.json")
     p.add_argument("--fig", type=str, default="figures/per_param/signal_share.png")
     p.add_argument("--replot", action="store_true", help="redraw the figure from --out without rerunning")
