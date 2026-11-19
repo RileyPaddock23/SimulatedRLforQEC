@@ -43,9 +43,10 @@ from scipy.stats import spearmanr
 
 from code_envs.surface_code_env import RotatedSurfaceCodeEnv
 from code_envs.color_code_env import ColorCodeEnv
+from code_envs.color_code_env import ColorCode488Env
 from run_experiment import SHOTS_PER_EPOCH_REF, make_agent, run_trial
 
-CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv}
+CODES = {"surface": RotatedSurfaceCodeEnv, "color": ColorCodeEnv, "color488": ColorCode488Env}
 TYPES = ("CX", "1q", "reset", "meas", "qubit")
 
 
