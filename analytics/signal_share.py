@@ -40,7 +40,7 @@ from scipy.stats import spearmanr
 from analytics.per_param_tracking import CODES, make_env
 from run_experiment import make_agent
 
-TRACKING_JSON = "runs/per_param/per_param_tracking_f0.0067_si1000.json"
+TRACKING_JSON = "figures/per_param/new_param_test.json" #"runs/per_param/per_param_tracking_f0.0067_si1000.json"
 
 
 # ---------------------------------------------------------------------- signal share (circuit only)
